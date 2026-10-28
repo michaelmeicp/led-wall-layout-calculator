@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173e43">
+  <meta name="description" content="Plan LED cabinet layouts with frame-aware geometry, pixel calculations, two-zone checks, and printable reports. Works offline.">
+  <title>LED Wall Layout Calculator</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="LED Wall Layout Calculator home"><span class="brandmark" aria-hidden="true">▦</span><span>FIELDPLAN <small>LED WALL TOOLS</small></span></a>
+    <div class="topmeta"><span class="version">V1.0</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
+  </header>
+  <main>
+    <div class="page-heading"><div><div class="eyebrow">LAYOUT WORKSPACE</div><h1>LED Wall Layout Calculator</h1><p>From cabinet dimensions to a clear wall plan.</p></div><span class="privacy-note">Local calculations · No account required</span></div>
+    <div class="workspace">
+      <aside class="controls" aria-label="Layout inputs">
+        <section class="card">
+          <div class="section-title"><span class="step">01</span><h2>Define the wall</h2><span class="unit-tag">mm</span></div>
+          <label>Wall name <span class="optional">optional</span><input id="wall-name" type="text" placeholder="e.g. Main stage" maxlength="160"></label>
+          <div class="pair"><label>Width<input id="wall-width" type="number" min="0" step="any" inputmode="decimal"></label><label>Height<input id="wall-height" type="number" min="0" step="any" inputmode="decimal"></label></div>
+          <fieldset class="segmented"><legend>Layout mode</legend><label><input type="radio" name="mode" value="single" checked><span>Single panel</span></label><label><input type="radio" name="mode" value="two_zones"><span>Two zones</span></label></fieldset>
+          <div id="split-controls" hidden><div class="pair"><label>Split direction<select id="split-direction"><option value="vertical">Vertical · left / right</option><option value="horizontal">Horizontal · bottom / top</option></select></label><label><span id="offset-label">Cut from left (mm)</span><input id="split-offset" type="number" min="0" step="any"></label></div></div>
+        </section>
+        <section class="card">
+          <div class="section-title"><span class="step">02</span><h2>Choose the cabinets</h2><button class="text-button" id="manage-library" type="button">Panel library ↗</button></div>
+          <div id="zone-selectors"></div>
+          <label>Fit strategy<select id="fit-strategy"><option value="fit_inside">Fit inside · floor</option><option value="cover_wall">Cover wall · ceil</option><option value="exact_only">Exact only · ±0.5 mm / axis</option></select></label>
+          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. Every grid starts at its zone’s bottom-left corner.</p>
+        </section>
+        <details class="card method"><summary>How to read this plan</summary><p>Frames determine the physical footprint. Active LED area and resolution determine pixels. Insets are centered within each cabinet.</p><p>Grids anchor to the <strong>bottom-left of each zone</strong>. Vertical cuts measure from the left; horizontal cuts measure from the bottom. Overflow extends right and upward.</p><p>Exact fit compares the nearest positive integer footprint to each target axis, independently, with an inclusive 0.5 mm tolerance. Floor and ceil use only a floating-point roundoff guard, never that tolerance.</p><p>Utilization is summed cabinet footprint / target area; overlap is counted twice and flagged. It can exceed 100%. LED aspect ratio uses aggregate active dimensions, excluding frame gaps.</p><p>Mixed grids get a combined canvas only when their physical and pixel alignment is clean. Otherwise use processor mapping / two canvases.</p><p>Large grids simplify drawing details only. All numerical results remain unchanged.</p></details>
+      </aside>
+      <div class="output">
+        <section class="card preview-card" aria-labelledby="preview-title">
+          <div class="preview-header"><div><div class="eyebrow">FRONT ELEVATION</div><h2 id="preview-title">Your wall plan</h2></div><span class="live-badge"><i></i> Live preview</span></div>
+          <div id="error" class="error-box" role="alert" hidden></div>
+          <div id="diagram" class="diagram" aria-live="off"></div>
+          <div class="preview-footer"><span>Frame geometry · centered active area</span><span>All dimensions in mm</span></div>
+        </section>
+        <section id="results" aria-live="polite" aria-atomic="true"></section>
+        <section class="export-bar"><div><strong>Take the plan with you</strong><p>Full report, including both zones and warnings.</p></div><div class="actions"><button id="copy-summary" type="button" class="secondary">Copy summary</button><button id="export-png" type="button" class="primary">Export PNG ↓</button></div></section>
+        <p id="action-status" role="status" class="status-message"></p>
+      </div>
+    </div>
+    <footer>LED Wall Layout Calculator · V1 <span>Geometry & pixels for early layout planning.</span></footer>
+  </main>
+  <dialog id="library-dialog" aria-labelledby="library-title">
+    <div class="dialog-header"><div><div class="eyebrow">YOUR COLLECTION</div><h2 id="library-title">Panel library</h2></div><button id="close-library" type="button" class="icon-button" aria-label="Close panel library">✕</button></div>
+    <p class="helper">Stored only on this device. Seeded panels are fictional examples. Import merges by ID and replaces matches; all records are validated before saving.</p>
+    <div class="library-toolbar"><button id="add-panel" type="button" class="primary">+ Add panel</button><div class="actions"><button id="export-library" type="button" class="secondary">Export JSON</button><button id="import-library" type="button" class="secondary">Import JSON</button><input id="import-file" type="file" accept="application/json,.json" hidden></div></div>
+    <p id="library-status" role="status" class="status-message"></p>
+    <div class="library-layout"><div id="library-list" class="library-list"></div>
+      <form id="panel-form" class="panel-form" novalidate>
+        <h3 id="editor-title">Edit panel</h3><input id="panel-id" type="hidden">
+        <label>Name <span class="required">required</span><input name="name" required maxlength="160"></label>
+        <label>Vendor <span class="optional">optional</span><input name="vendor" maxlength="160"></label>
+        <div class="field-heading">Active LED area <small>mm · required</small></div><div class="pair"><label>Width<input name="active_width_mm" type="number" step="any" min="0" required></label><label>Height<input name="active_height_mm" type="number" step="any" min="0" required></label></div>
+        <div class="field-heading">Physical frame <small>mm · defaults to active</small></div><div class="pair"><label>Width<input name="frame_width_mm" type="number" step="any" min="0"></label><label>Height<input name="frame_height_mm" type="number" step="any" min="0"></label></div>
+        <div class="field-heading">Resolution <small>px · or derive from pitch</small></div><div class="pair"><label>Width<input name="resolution_w" type="number" step="1" min="1"></label><label>Height<input name="resolution_h" type="number" step="1" min="1"></label></div>
+        <label>Pixel pitch <span class="optional">mm · optional with explicit resolution</span><input name="pixel_pitch_mm" type="number" step="any" min="0"></label>
+        <p class="helper">Missing pixel dimensions use active / pitch, rounded to the nearest integer (half up). Zero-pixel results are invalid. Explicit resolution wins; &gt;1% pitch differences are flagged.</p>
+        <label class="checkbox-label"><input name="rotatable" type="checkbox">Allow 90° rotation</label>
+        <label>Notes <span class="optional">optional</span><textarea name="notes" rows="2" maxlength="2000"></textarea></label>
+        <div id="panel-error" class="error-box" role="alert" hidden></div>
+        <button class="primary" type="submit">Save panel</button>
+      </form>
+    </div>
+  </dialog>
+  <dialog id="copy-dialog" aria-labelledby="copy-title"><div class="dialog-header"><h2 id="copy-title">Copy report text</h2><button id="close-copy" class="icon-button" aria-label="Close summary" type="button">✕</button></div><p>Your browser couldn’t access the clipboard. Select and copy the complete summary below.</p><textarea id="copy-text" rows="18" readonly></textarea><button class="primary" id="select-summary" type="button">Select all text</button></dialog>
+</body>
+</html>
