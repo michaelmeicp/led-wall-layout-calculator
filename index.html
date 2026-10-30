@@ -13,7 +13,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="./" aria-label="LED Wall Layout Calculator home"><span class="brandmark" aria-hidden="true">▦</span><span>FIELDPLAN <small>LED WALL TOOLS</small></span></a>
-    <div class="topmeta"><span class="version">V1.2</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
+    <div class="topmeta"><span class="version">V1.3</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
   </header>
   <main>
     <div class="page-heading"><div><div class="eyebrow">LAYOUT WORKSPACE</div><h1>LED Wall Layout Calculator</h1><p>From cabinet dimensions to a clear wall plan.</p></div><span class="privacy-note">Local calculations · No account required</span></div>
@@ -29,12 +29,22 @@
         <section class="card">
           <div class="section-title"><span class="step">02</span><h2>Choose the cabinets</h2><button class="text-button" id="manage-library" type="button">Panel library ↗</button></div>
           <div id="zone-selectors"></div>
-          <label>Whole-layout position<select id="layout-alignment"><option value="center">Center</option><option value="top_left">Top left</option><option value="top_right">Top right</option><option value="bottom_left">Bottom left</option><option value="bottom_right">Bottom right</option></select></label>
-          <p class="helper placement-help">Both fitted zones join first, then move together. Left / right layouts share a bottom edge; bottom / top layouts share a left edge.</p>
           <label>Fit strategy<select id="fit-strategy"><option value="fit_inside">Fit inside · floor</option><option value="cover_wall">Cover wall · ceil</option><option value="exact_only">Exact only · ±0.5 mm / axis</option></select></label>
-          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. The fitted grids join first, then move together to the center or a corner of the wall.</p>
+          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. The fitted grids join first, then move together to one of nine wall positions.</p>
         </section>
-        <details class="card method"><summary>How to read this plan</summary><p>Frames determine the physical footprint. Active LED area and resolution determine pixels. Insets are centered within each cabinet.</p><p>Choose the <strong>center or a corner of the whole layout</strong>. Two fitted grids join before positioning: left / right grids share their bottom edge; bottom / top grids share their left edge. Unequal extents form a stepped outline. Gaps measure the assembled outer frame bounds to the wall edges in mm; overflow is labelled explicitly.</p><p>The cut sets sizing allocations for cabinet counts: from the left for a vertical cut, from the bottom for a horizontal cut. It is not a fixed seam position after packing. Exact fit compares the nearest positive integer footprint to each allocation axis, independently, with an inclusive 0.5 mm tolerance. Floor and ceil use only a floating-point roundoff guard, never that tolerance.</p><p>Utilization is summed cabinet footprint / wall area. A cover layout can exceed 100%. LED aspect ratio uses aggregate active dimensions, excluding frame gaps.</p><p>Mixed grids get a combined canvas only when their physical and pixel alignment is clean. Otherwise use processor mapping / two canvases.</p><p>Power totals use installed cabinet counts and the optional typical / average and maximum W per cabinet in your panel library. Missing ratings show unknown or partial totals. These are load estimates, not circuit or installation sizing.</p><p>Large grids simplify drawing details only. All numerical results remain unchanged.</p></details>
+        <section class="card placement-card" aria-labelledby="placement-title">
+          <div class="section-title"><span class="step">03</span><h2 id="placement-title">Lock &amp; place the group</h2></div>
+          <button id="composition-lock" type="button" class="secondary" aria-pressed="false" aria-describedby="composition-status">Lock composition</button>
+          <p id="composition-status" class="helper lock-status" role="status"></p>
+          <label>Whole-layout position<select id="layout-alignment"><option value="top_left">Top left</option><option value="top_center">Top center</option><option value="top_right">Top right</option><option value="middle_left">Left center</option><option value="center">Center</option><option value="middle_right">Right center</option><option value="bottom_left">Bottom left</option><option value="bottom_center">Bottom center</option><option value="bottom_right">Bottom right</option></select></label>
+          <div class="anchor-grid" role="group" aria-label="Move the complete group">
+            <button type="button" data-anchor="top_left" aria-label="Move group to top left" title="Top left" aria-pressed="false">↖</button><button type="button" data-anchor="top_center" aria-label="Move group to top center" title="Top center" aria-pressed="false">↑</button><button type="button" data-anchor="top_right" aria-label="Move group to top right" title="Top right" aria-pressed="false">↗</button>
+            <button type="button" data-anchor="middle_left" aria-label="Move group to left center" title="Left center" aria-pressed="false">←</button><button type="button" data-anchor="center" aria-label="Move group to center" title="Center" aria-pressed="true">●</button><button type="button" data-anchor="middle_right" aria-label="Move group to right center" title="Right center" aria-pressed="false">→</button>
+            <button type="button" data-anchor="bottom_left" aria-label="Move group to bottom left" title="Bottom left" aria-pressed="false">↙</button><button type="button" data-anchor="bottom_center" aria-label="Move group to bottom center" title="Bottom center" aria-pressed="false">↓</button><button type="button" data-anchor="bottom_right" aria-label="Move group to bottom right" title="Bottom right" aria-pressed="false">↘</button>
+          </div>
+          <p class="helper placement-help">Both fitted zones move together. Left / right layouts share a bottom edge; bottom / top layouts share a left edge.</p>
+        </section>
+        <details class="card method"><summary>How to read this plan</summary><p>Frames determine the physical footprint. Active LED area and resolution determine pixels. Insets are centered within each cabinet.</p><p>Choose <strong>one of nine positions for the whole layout</strong>. Two fitted grids join before positioning: left / right grids share their bottom edge; bottom / top grids share their left edge. Unequal extents form a stepped outline. Gaps measure the assembled outer frame bounds to the wall edges in mm; overflow is labelled explicitly.</p><p>Lock the composition once its size is right. The lock holds wall dimensions, cabinet choices, fit, cut and library edits; placement and exports remain available. Lock state is saved on this device. Unlock before changing the composition.</p><p>The cut sets sizing allocations for cabinet counts: from the left for a vertical cut, from the bottom for a horizontal cut. It is not a fixed seam position after packing. Exact fit compares the nearest positive integer footprint to each allocation axis, independently, with an inclusive 0.5 mm tolerance. Floor and ceil use only a floating-point roundoff guard, never that tolerance.</p><p>Utilization is summed cabinet footprint / wall area. A cover layout can exceed 100%. LED aspect ratio uses aggregate active dimensions, excluding frame gaps.</p><p>Mixed grids get a combined canvas only when their physical and pixel alignment is clean. Otherwise use processor mapping / two canvases.</p><p>Power totals use installed cabinet counts and the optional typical / average and maximum W per cabinet in your panel library. Missing ratings show unknown or partial totals. These are load estimates, not circuit or installation sizing.</p><p>Large grids simplify drawing details only. All numerical results remain unchanged.</p></details>
       </aside>
       <div class="output">
         <section class="card preview-card" aria-labelledby="preview-title">
@@ -48,11 +58,12 @@
         <p id="action-status" role="status" class="status-message"></p>
       </div>
     </div>
-    <footer>LED Wall Layout Calculator · V1.2 <span>Layout, pixels &amp; power estimates.</span></footer>
+    <footer>LED Wall Layout Calculator · V1.3 <span>Layout, pixels &amp; power estimates.</span></footer>
   </main>
   <dialog id="library-dialog" aria-labelledby="library-title">
     <div class="dialog-header"><div><div class="eyebrow">YOUR COLLECTION</div><h2 id="library-title">Panel library</h2></div><button id="close-library" type="button" class="icon-button" aria-label="Close panel library">✕</button></div>
     <p class="helper">Stored only on this device. Seeded panels are fictional examples. Import merges by ID and replaces matches; all records are validated before saving.</p>
+    <p id="library-lock-status" class="helper library-lock-note" hidden>Composition locked: library is read-only. You can view panels and export JSON; unlock the composition to edit or import.</p>
     <div class="library-toolbar"><button id="add-panel" type="button" class="primary">+ Add panel</button><div class="actions"><button id="export-library" type="button" class="secondary">Export JSON</button><button id="import-library" type="button" class="secondary">Import JSON</button><input id="import-file" type="file" accept="application/json,.json" hidden></div></div>
     <p id="library-status" role="status" class="status-message"></p>
     <div class="library-layout"><div id="library-list" class="library-list"></div>

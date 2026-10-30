@@ -1,6 +1,10 @@
 /** Pure geometry and validation; millimetres are physical, resolution is pixels. */
 export const EXACT_TOLERANCE_MM = 0.5;
-export const ALIGNMENTS = Object.freeze({ center: 'Center', top_left: 'Top left', top_right: 'Top right', bottom_left: 'Bottom left', bottom_right: 'Bottom right' });
+export const ALIGNMENTS = Object.freeze({
+  top_left: 'Top left', top_center: 'Top center', top_right: 'Top right',
+  middle_left: 'Left center', center: 'Center', middle_right: 'Right center',
+  bottom_left: 'Bottom left', bottom_center: 'Bottom center', bottom_right: 'Bottom right',
+});
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const isEmpty = value => value === undefined || value === null || value === '';
 const MAX_NOISE_MM = 1e-9;
@@ -190,6 +194,13 @@ export function resolveAlignment(config) {
   return alignment;
 }
 
+/** Lock is a persisted UI edit guard. It does not snapshot or change geometry. */
+export function resolveCompositionLocked(config) {
+  object(config, 'Layout');
+  if (config.compositionLocked !== undefined && typeof config.compositionLocked !== 'boolean') throw new Error('Composition lock must be true or false.');
+  return config.compositionLocked ?? false;
+}
+
 /** Signed gaps are assembly-to-wall clearances; negative means overflow. */
 export function gapText(value) { return `${format(Math.abs(value))} mm ${value < 0 ? 'overflow' : 'gap'}`; }
 
@@ -250,8 +261,8 @@ function packGroup(zones, wall, mode, split, alignment) {
   const width = finite(vertical ? zones.reduce((sum, zone) => sum + zone.actualWidth, 0) : Math.max(...zones.map(zone => zone.actualWidth)), 'Assembly width');
   const height = finite(packing === 'horizontal' ? zones.reduce((sum, zone) => sum + zone.actualHeight, 0) : Math.max(...zones.map(zone => zone.actualHeight)), 'Assembly height');
   const deltaW = wall.width_mm - width, deltaH = wall.height_mm - height;
-  const x = alignment === 'center' ? deltaW / 2 : alignment.endsWith('right') ? deltaW : 0;
-  const y = alignment === 'center' ? deltaH / 2 : alignment.startsWith('top') ? deltaH : 0;
+  const x = alignment.endsWith('center') ? deltaW / 2 : alignment.endsWith('right') ? deltaW : 0;
+  const y = alignment === 'center' || alignment.startsWith('middle_') ? deltaH / 2 : alignment.startsWith('top') ? deltaH : 0;
   const gaps = { left: x, right: deltaW - x, top: deltaH - y, bottom: y };
   let offset = 0;
   for (const zone of zones) {
@@ -294,6 +305,7 @@ export function calculate(config, panels) {
   if (!['single', 'two_zones'].includes(mode)) throw new Error('Choose single or two zones.');
   if (!['fit_inside', 'cover_wall', 'exact_only'].includes(strategy)) throw new Error('Choose a valid fit strategy.');
   const alignment = resolveAlignment(config);
+  const compositionLocked = resolveCompositionLocked(config);
   if (!Array.isArray(panels)) throw new Error('Panel library must be an array.');
   const library = parseLibrary(panels);
   if (!Array.isArray(config.zones) || config.zones.length !== (mode === 'single' ? 1 : 2)) throw new Error(`Provide exactly ${mode === 'single' ? 'one zone' : 'two zones'}.`);
@@ -332,5 +344,5 @@ export function calculate(config, panels) {
   const totalCount = finite(zones.reduce((sum, zone) => sum + zone.count, 0), 'Total cabinet count');
   const utilization = finite(zones.reduce((sum, zone) => sum + zone.utilization * (zone.width / wall.width_mm) * (zone.height / wall.height_mm), 0), 'Total area utilization');
   const counts = [...countMap.values()].map(entry => ({ ...entry, power: aggregatePower(zones.filter(zone => zone.panel.id === entry.panelId)) }));
-  return { wall, mode, strategy, split, alignment, group, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split, group), utilization };
+  return { wall, mode, strategy, split, alignment, compositionLocked, group, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split, group), utilization };
 }

@@ -9,3 +9,5 @@
 .result-row strong{min-width:0;overflow-wrap:anywhere}.result-row span{flex-shrink:0;max-width:50%}.power-card .helper{margin-top:12px}.sku-power{margin-top:15px;border-top:1px solid var(--line);padding-top:12px}.sku-power-item{margin-top:13px}.sku-power-item h4{font-size:12px;margin:0 0 8px;overflow-wrap:anywhere}
 
 .group-result .helper{margin-top:12px}.placement-help{margin:-5px 0 16px}
+
+.lock-status{margin:12px 0 17px}.anchor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:-3px}.anchor-grid button{min-height:44px;border:1px solid var(--line);border-radius:6px;background:#f5f7f3;color:var(--teal);font-size:21px}.anchor-grid button[aria-pressed=true]{background:var(--teal);border-color:var(--teal);color:white}.placement-card .placement-help{margin:13px 0 0}.library-lock-note{margin-top:12px;padding:10px;background:#f0f5ec;border-radius:6px}input:disabled,select:disabled,textarea:disabled{background:#f0f2ed!important;color:#6c7a75!important;cursor:not-allowed}

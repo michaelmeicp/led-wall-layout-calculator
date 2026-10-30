@@ -121,7 +121,7 @@ test('rotated frame with active insets retains alignment, gaps and wattage in ex
 
 
 test('all placements move an unequal-height vertical assembly together with one set of wall gaps', () => {
-  const cases = { center: [100,50], top_left: [0,100], top_right: [200,100], bottom_left: [0,0], bottom_right: [200,0] };
+  const cases = { top_left: [0,100], top_center: [100,100], top_right: [200,100], middle_left: [0,50], center: [100,50], middle_right: [200,50], bottom_left: [0,0], bottom_center: [100,0], bottom_right: [200,0] };
   const models = [panel({ typical_power_w: 100, max_power_w: 200 }), panel({ id: id(1), name: 'Square block', active_width_mm: 400, active_height_mm: 300, resolution_w: 128, resolution_h: 96, typical_power_w: 75, max_power_w: 150 })];
   for (const [alignment, [x,y]] of Object.entries(cases)) {
     const result = calculate(config({ wall: { width_mm: 2600, height_mm: 1450 }, mode: 'two_zones', alignment, split: { direction: 'vertical', offset_mm: 1300 }, zones: [{ panelId: id(9) }, { panelId: id(1) }] }), models);
@@ -156,4 +156,45 @@ test('horizontal unequal-width assembly reports sizing allocations separately fr
   assert.match(summary, /Packed frame origin: \(50, 1,475\) mm/);
   assert.ok(svg.includes('left edges align. Unequal widths create a step.'));
   assert.ok(!svg.includes('undefined'));
+});
+
+
+test('all nine placements preserve joined horizontal blocks and export whole-assembly wall gaps', () => {
+  const cases = { top_left: [0,250], top_center: [50,250], top_right: [100,250], middle_left: [0,125], center: [50,125], middle_right: [100,125], bottom_left: [0,0], bottom_center: [50,0], bottom_right: [100,0] };
+  const names = { top_left: 'Top left', top_center: 'Top center', top_right: 'Top right', middle_left: 'Left center', center: 'Center', middle_right: 'Right center', bottom_left: 'Bottom left', bottom_center: 'Bottom center', bottom_right: 'Bottom right' };
+  for (const [alignment, [x,y]] of Object.entries(cases)) {
+    const result = calculate(config({ wall: { width_mm: 2500, height_mm: 2800 }, mode: 'two_zones', alignment, split: { direction: 'horizontal', offset_mm: 1400 }, zones: [{ panelId: id(9) }, { panelId: id(1) }] }), [panel(), panel({ id: id(1), name: 'Upper block', active_width_mm: 550, active_height_mm: 300, resolution_w: 176, resolution_h: 96 })]);
+    const summary = summaryText(result, date);
+    const svg = renderDiagram(result, { report: true, date });
+    const gaps = `Wall edge gaps: Left: ${x} mm gap · Right: ${100-x} mm gap · Top: ${250-y} mm gap · Bottom: ${y} mm gap`;
+    assert.ok(svg.includes(`data-group-x-mm="${x}" data-group-y-mm="${y}"`), alignment);
+    assert.ok(svg.includes(`data-zone="0" data-frame-x-mm="${x}" data-frame-y-mm="${y}"`), alignment);
+    assert.ok(svg.includes(`data-zone="1" data-frame-x-mm="${x}" data-frame-y-mm="${y+1350}"`), alignment);
+    assert.ok(summary.includes(gaps), alignment);
+    assert.ok(svg.includes(gaps), alignment);
+    assert.ok(summary.includes(`Assembly alignment: ${names[alignment]}`), alignment);
+    assert.ok(svg.includes(`Assembly alignment: ${names[alignment]}`), alignment);
+    assert.equal((summary.match(/Wall edge gaps:/g) || []).length, 1);
+    assert.equal(result.zones[0].actualY + result.zones[0].actualHeight, result.zones[1].actualY);
+  }
+});
+
+test('composition lock status appears in summary, live diagram and PNG report without changing power or geometry', () => {
+  const raw = config({ wall: { width_mm: 2600, height_mm: 1450 }, mode: 'two_zones', alignment: 'top_center', split: { direction: 'vertical', offset_mm: 1300 }, zones: [{ panelId: id(9) }, { panelId: id(1) }] });
+  const models = [panel({ typical_power_w: 100, max_power_w: 250 }), panel({ id: id(1), name: 'Unknown cabinet' })];
+  const unlocked = calculate(raw, models);
+  const locked = calculate({ ...raw, compositionLocked: true }, models);
+  assert.equal(unlocked.compositionLocked, false);
+  assert.equal(locked.compositionLocked, true);
+  assert.deepEqual(locked.group, unlocked.group);
+  assert.deepEqual(locked.power, unlocked.power);
+  for (const [result, status] of [[unlocked, 'Unlocked'], [locked, 'Locked']]) {
+    assert.ok(summaryText(result, date).includes(`Composition: ${status}`));
+    for (const report of [false, true]) {
+      const svg = renderDiagram(result, { report, date });
+      assert.ok(svg.includes(`Composition: ${status}`));
+      assert.ok(svg.includes('Whole wall power: Typical / average: Partial: 800 W / 0.8 kW known (8 of 16 cabinets)'));
+      if (result.compositionLocked) assert.ok(svg.includes('unlock to edit sizing; placement stays editable'));
+    }
+  }
 });

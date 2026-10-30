@@ -13,6 +13,9 @@ const f = formatNumber;
 const rounded = (n) => Math.round(n * 1000) / 1000;
 const orientation = (z) => z.rotated ? '↻ 90°' : '↑ 0°';
 const alignmentName = (group) => ALIGNMENTS[group.alignment] || group.alignment;
+const compositionLine = (result) => result.compositionLocked
+  ? 'Composition: Locked · unlock to edit sizing; placement stays editable'
+  : 'Composition: Unlocked';
 const powerLine = (power) => `Typical / average: ${powerText(power.typical)} · Maximum: ${powerText(power.maximum)}`;
 const gapLine = (z) => ['left', 'right', 'top', 'bottom'].map((edge) => `${edge[0].toUpperCase()}${edge.slice(1)}: ${gapText(z.gaps[edge])}`).join(' · ');
 const ratio = (w, h) => w > 0 && h > 0 ? `${f(w / h, 4)}:1` : '—';
@@ -115,6 +118,7 @@ export function summaryText(result, date = new Date()) {
     `Mode: ${result.mode === 'two_zones' ? 'Two zones' : 'Single zone'}; strategy: ${strategyName(result.strategy)}`,
     splitDescription(result),
     packingDescription(result),
+    compositionLine(result),
     'Alignment moves the complete assembly together; +X right, +Y up. Gaps measure full-wall edges to the assembly bounding box; negative clearance is overflow. Active areas are centered in frames.',
     `Assembly alignment: ${alignmentName(group)}; group origin (${f(group.x)}, ${f(group.y)}) mm from wall bottom-left`,
     `Assembly frame bounds: ${f(group.width)} × ${f(group.height)} mm`,
@@ -265,6 +269,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   let y = 666 + headerExtra;
   y += paragraph(34, y, splitDescription(result), 14, 'font-weight="700"') + 3;
   y += paragraph(34, y, packingDescription(result), 12, `fill="${MUTED}"`) + 5;
+  y += paragraph(34, y, compositionLine(result), 13, 'font-weight="700"');
   y += paragraph(34, y, `Assembly alignment: ${alignmentName(group)} · Frame bounds ${f(group.width)} × ${f(group.height)} mm · Origin (${f(group.x)}, ${f(group.y)}) mm`, 14, 'font-weight="700"');
   y += paragraph(34, y, `Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`, 14, 'font-weight="700"');
   y += paragraph(34, y, 'Dark outline = full wall · Dashed outline = complete assembly bounds (red for overflow) · Gaps measure wall to assembly bounds.', 12, `fill="${MUTED}"`) + 5;
@@ -326,7 +331,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   const height = Math.ceil(y + 14);
   const width = report ? 1800 : 1200;
   const pixelHeight = Math.round(height * width / W);
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount, 0))} cabinets. Assembly alignment ${esc(alignmentName(group))}. Wall edge gaps: ${esc(gapLine(group))}. All dimensions in millimeters.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount, 0))} cabinets. ${esc(compositionLine(result))}. Assembly alignment ${esc(alignmentName(group))}. Wall edge gaps: ${esc(gapLine(group))}. All dimensions in millimeters.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
 }
 
 export async function downloadPNG(result) {

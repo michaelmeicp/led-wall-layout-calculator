@@ -1,4 +1,4 @@
-import { normalizePanel, parseLibrary, calculate, alignmentName, gapText, powerText, resolveAlignment } from './core.js';
+import { normalizePanel, parseLibrary, calculate, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked } from './core.js';
 import { renderDiagram, summaryText, downloadPNG } from './diagram.js';
 
 const $ = id => document.getElementById(id);
@@ -11,7 +11,7 @@ const seeds = [
   {id:'10000000-0000-4000-8000-000000000002',name:'Demo Square 300',vendor:'Fictional example',active_width_mm:300,active_height_mm:300,resolution_w:192,resolution_h:192,pixel_pitch_mm:1.5625,rotatable:true,notes:'Example only. Not a real product.'},
   {id:'10000000-0000-4000-8000-000000000003',name:'Demo Inset 500',vendor:'Fictional example',active_width_mm:480,active_height_mm:480,frame_width_mm:500,frame_height_mm:500,resolution_w:240,resolution_h:240,pixel_pitch_mm:2,rotatable:false,notes:'Fictional 10 mm centered inset on all sides.'}
 ].map(normalizePanel);
-const defaults = {wall:{name:'Main stage',width_mm:4800,height_mm:2700},mode:'single',strategy:'fit_inside',alignment:'center',split:{direction:'vertical',offset_mm:2400},zones:[{panelId:seeds[0].id,rotated:false},{panelId:seeds[1].id,rotated:false}]};
+const defaults = {wall:{name:'Main stage',width_mm:4800,height_mm:2700},mode:'single',strategy:'fit_inside',alignment:'center',compositionLocked:false,split:{direction:'vertical',offset_mm:2400},zones:[{panelId:seeds[0].id,rotated:false},{panelId:seeds[1].id,rotated:false}]};
 let panels = structuredClone(seeds), config = structuredClone(defaults), result = null, editingId = null;
 let storageAvailable = true;
 try {
@@ -22,6 +22,7 @@ try {
     if (data.config && typeof data.config === 'object') {
       config = {...defaults,...data.config,wall:{...defaults.wall,...data.config.wall},split:{...defaults.split,...data.config.split}};
       config.alignment = resolveAlignment(data.config);
+      config.compositionLocked = resolveCompositionLocked(data.config);
       config.zones = [0,1].map(i => { const zone = {...defaults.zones[i],...data.config.zones?.[i]}; delete zone.alignment; return zone; });
     }
   }
@@ -64,11 +65,34 @@ function renderSelectors() {
   }).join('');
 }
 
+function renderLockState() {
+  const locked = config.compositionLocked;
+  for (const id of ['wall-width','wall-height','split-direction','split-offset','fit-strategy','add-panel','import-library','import-file']) $(id).disabled = locked;
+  document.querySelectorAll('input[name="mode"], #zone-selectors select, #panel-form input, #panel-form textarea, #panel-form button').forEach(input => { input.disabled = locked; });
+  document.querySelectorAll('#library-list button[data-action="duplicate"], #library-list button[data-action="delete"]').forEach(button => { button.disabled = locked; });
+  $('composition-lock').textContent = locked ? 'Unlock composition' : 'Lock composition';
+  $('composition-lock').setAttribute('aria-pressed',String(locked));
+  $('composition-lock').disabled = !locked && (!result || !result.totalCount);
+  $('composition-status').textContent = locked
+    ? 'Locked on this device. Wall size, cabinet choices, sizing split, fit and panel library are held. Choose any position to move the complete group; unlock to edit its composition.'
+    : 'Set the wall size, A / B cabinets and fit first. Lock a valid composition to hold its size and arrangement, then move the whole group. The lock is saved with this session.';
+  $('library-lock-status').hidden = !locked;
+  document.querySelectorAll('[data-anchor]').forEach(button => { button.setAttribute('aria-pressed',String(button.dataset.anchor === config.alignment)); });
+}
+
+function compositionEditBlocked() {
+  if (!config.compositionLocked) return false;
+  $('action-status').textContent = 'Composition is locked. Unlock it before changing sizes, cabinet choices or the panel library.';
+  fillControls();
+  renderLockState();
+  return true;
+}
+
 function row(label,value) {return `<div class="result-row"><span>${label}</span><strong>${value}</strong></div>`;}
 function renderResults(r) {
   const canvas = r.canvas.combined && r.canvas.width > 0 && r.canvas.height > 0 ? `${num(r.canvas.width)} × ${num(r.canvas.height)}` : (r.totalCount ? 'Per zone' : 'No pixels');
   $('results').innerHTML = `<div class="metric-grid"><div class="metric"><div class="label">Total cabinets</div><div class="value">${num(r.totalCount)}</div><div class="hint">${r.counts.map(p=>`${num(p.count)} ${esc(p.name)}`).join(' + ') || 'No cabinets fit'}</div></div><div class="metric"><div class="label">${r.mode==='single'?'LED resolution':'Pixel canvas'}</div><div class="value" style="font-size:${canvas.length > 15?'18':'22'}px">${canvas}</div><div class="hint">${r.canvas.combined?'pixels · aligned canvas':'See zone resolutions below'}</div></div><div class="metric"><div class="label">Utilization</div><div class="value">${num(r.utilization*100)}<small>%</small></div><div class="hint">Cabinet footprint / target area</div></div></div>
-  <div class="card result-card group-result"><h3>Whole-layout placement</h3><div class="result-table">${row('Position',alignmentName(r.group.alignment))}${row('Group footprint',`${num(r.group.width)} × ${num(r.group.height)} mm`)}${row('Left gap',gapText(r.group.gaps.left))}${row('Right gap',gapText(r.group.gaps.right))}${row('Top gap',gapText(r.group.gaps.top))}${row('Bottom gap',gapText(r.group.gaps.bottom))}</div><p class="helper">${r.mode==='single'?'The cabinet grid moves as one group.':r.split.direction==='vertical'?'A and B join edge to edge, left to right, with their bottom edges aligned.':'A and B join edge to edge, bottom to top, with their left edges aligned.'} All four gaps measure the assembled outer frame bounds to the wall.${!r.totalCount?' No cabinets installed; clearances are illustrative.':''}</p></div>
+  <div class="card result-card group-result"><h3>Whole-layout placement</h3><div class="result-table">${row('Composition',r.compositionLocked?'Locked':'Unlocked')}${row('Position',alignmentName(r.group.alignment))}${row('Group footprint',`${num(r.group.width)} × ${num(r.group.height)} mm`)}${row('Left gap',gapText(r.group.gaps.left))}${row('Right gap',gapText(r.group.gaps.right))}${row('Top gap',gapText(r.group.gaps.top))}${row('Bottom gap',gapText(r.group.gaps.bottom))}</div><p class="helper">${r.mode==='single'?'The cabinet grid moves as one group.':r.split.direction==='vertical'?'A and B join edge to edge, left to right, with their bottom edges aligned.':'A and B join edge to edge, bottom to top, with their left edges aligned.'} All four gaps measure the assembled outer frame bounds to the wall.${!r.totalCount?' No cabinets installed; clearances are illustrative.':''}</p></div>
   <div class="card result-card">${r.zones.map((z,i)=>`<div class="zone-result"><h3><i class="swatch ${i && z.panel.id!==r.zones[0].panel.id?'swatch-b':''}"></i>${esc(z.label)} <span class="optional">${esc(z.panel.name)} · ${z.rotated?'90° rotated':'0° native'}</span></h3><div class="result-table">${row('Cabinet grid',`${num(z.nx)} × ${num(z.ny)} · ${num(z.count)} cabinets`)}${row('Sizing allocation',`${num(z.width)} × ${num(z.height)} mm`)}${row('Actual footprint',`${num(z.actualWidth)} × ${num(z.actualHeight)} mm`)}${row('Resolution',`${num(z.resolutionW)} × ${num(z.resolutionH)} px`)}${row('Frame origin (wall X / Y)',`${num(z.actualX)} / ${num(z.actualY)} mm`)}${row('Typical / average power',powerText(z.power.typical))}${row('Maximum power',powerText(z.power.maximum))}${row('Active aggregate',`${num(z.activeWidth)} × ${num(z.activeHeight)} mm`)}${row('LED aspect ratio',ratio(z.activeWidth,z.activeHeight))}${row('Allocation utilization',`${num(z.utilization*100)}%`)}${row('Derived pitch X / Y',`${num(z.panel.active_width_mm/z.panel.resolution_w)} / ${num(z.panel.active_height_mm/z.panel.resolution_h)} mm`)}</div></div>`).join('')}
   <div class="result-table" style="margin-top:16px">${row('Target wall ratio',ratio(r.wall.width_mm,r.wall.height_mm))}</div>
   <div class="mapping ${r.canvas.combined?'':'separate'}"><strong>${r.canvas.combined?'Aligned pixel canvas':'Processor mapping / two canvases'}</strong>${esc(r.canvas.reason)}</div>
@@ -97,20 +121,23 @@ function update() {
     $('export-png').disabled = true;
     $('copy-summary').disabled = true;
   }
+  renderLockState();
   persist();
 }
 
 for (const [id,key] of [['wall-name','name'],['wall-width','width_mm'],['wall-height','height_mm']]) {
-  $(id).addEventListener('input',e=>{config.wall[key]=key==='name'?e.target.value:e.target.value === '' ? '' : Number(e.target.value); update();});
+  $(id).addEventListener('input',e=>{if(key!=='name' && compositionEditBlocked())return;config.wall[key]=key==='name'?e.target.value:e.target.value === '' ? '' : Number(e.target.value); update();});
 }
-document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',e=>{config.mode=e.target.value;renderSelectors();update();}));
+document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',e=>{if(compositionEditBlocked())return;config.mode=e.target.value;renderSelectors();update();}));
 $('layout-alignment').addEventListener('change',e=>{config.alignment=e.target.value;update();});
-$('fit-strategy').addEventListener('change',e=>{config.strategy=e.target.value;update();});
-$('split-direction').addEventListener('change',e=>{config.split.direction=e.target.value;renderSelectors();update();});
-$('split-offset').addEventListener('input',e=>{config.split.offset_mm=e.target.value === '' ? '' : Number(e.target.value);update();});
+document.querySelectorAll('[data-anchor]').forEach(button=>button.addEventListener('click',()=>{config.alignment=button.dataset.anchor;$('layout-alignment').value=config.alignment;update();}));
+$('composition-lock').addEventListener('click',()=>{if(!config.compositionLocked && (!result || !result.totalCount))return;config.compositionLocked=!config.compositionLocked;update();});
+$('fit-strategy').addEventListener('change',e=>{if(compositionEditBlocked())return;config.strategy=e.target.value;update();});
+$('split-direction').addEventListener('change',e=>{if(compositionEditBlocked())return;config.split.direction=e.target.value;renderSelectors();update();});
+$('split-offset').addEventListener('input',e=>{if(compositionEditBlocked())return;config.split.offset_mm=e.target.value === '' ? '' : Number(e.target.value);update();});
 $('zone-selectors').addEventListener('change',e=>{
   const {zone,field} = e.target.dataset;
-  if (zone===undefined) return;
+  if (zone===undefined || compositionEditBlocked()) return;
   config.zones[Number(zone)][field] = field==='rotated' ? e.target.value==='true' : e.target.value;
   if(field==='panelId' && !panels.find(p=>p.id===e.target.value)?.rotatable) config.zones[Number(zone)].rotated=false;
   renderSelectors(); update();
@@ -128,17 +155,19 @@ function editPanel(id) {
   panelForm.elements.rotatable.checked=panel?.rotatable??false;
   $('panel-error').hidden=true;
   renderLibrary();
+  renderLockState();
 }
 function renderLibrary() {
   $('library-list').innerHTML = panels.length ? panels.map(p=>`<article class="library-item ${editingId===p.id?'selected':''}"><h3>${esc(p.name)}</h3><p>${esc(p.vendor||'No vendor')} · ${num(p.frame_width_mm)} × ${num(p.frame_height_mm)} mm</p><p>${num(p.resolution_w)} × ${num(p.resolution_h)} px · ${p.rotatable?'rotatable':'fixed'}</p><p>Typical ${p.typical_power_w === null ? 'unknown' : num(p.typical_power_w)+' W'} · Max ${p.max_power_w === null ? 'unknown' : num(p.max_power_w)+' W'}</p><div class="actions"><button type="button" data-action="edit" data-id="${p.id}" aria-label="Edit ${esc(p.name)}">Edit</button><button type="button" data-action="duplicate" data-id="${p.id}" aria-label="Duplicate ${esc(p.name)}">Duplicate</button><button type="button" class="delete" data-action="delete" data-id="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button></div></article>`).join('') : '<p class="helper">Your library is empty. Add a panel to begin.</p>';
 }
 $('manage-library').addEventListener('click',()=>{editPanel(panels[0]?.id||null);$('library-dialog').showModal();});
 $('close-library').addEventListener('click',()=>$('library-dialog').close());
-$('add-panel').addEventListener('click',()=>{editPanel(null);panelForm.elements.name.focus();});
+$('add-panel').addEventListener('click',()=>{if(compositionEditBlocked())return;editPanel(null);panelForm.elements.name.focus();});
 $('library-list').addEventListener('click',e=>{
   const button=e.target.closest('button[data-action]'); if(!button)return;
   const {action,id}=button.dataset, panel=panels.find(p=>p.id===id); if(!panel)return;
   if(action==='edit') {editPanel(id);return;}
+  if(compositionEditBlocked())return;
   if(action==='duplicate') {
     const copy=normalizePanel({...panel,id:crypto.randomUUID(),name:`${panel.name.slice(0,155)} copy`});
     panels.push(copy);editPanel(copy.id);$('library-status').textContent=`Duplicated ${panel.name}.`;
@@ -152,6 +181,7 @@ $('library-list').addEventListener('click',e=>{
 });
 panelForm.addEventListener('submit',e=>{
   e.preventDefault();
+  if(compositionEditBlocked()){editPanel(editingId);return;}
   try {
     const raw={id:editingId||crypto.randomUUID(),rotatable:panelForm.elements.rotatable.checked};
     for(const key of ['name','vendor','notes'])raw[key]=panelForm.elements[key].value;
@@ -169,11 +199,14 @@ function downloadFile(blob,filename){const url=URL.createObjectURL(blob);const a
 $('export-library').addEventListener('click',()=>{
   try {downloadFile(new Blob([JSON.stringify({version:1,panels:panels.map(({warnings,...p})=>p)},null,2)],{type:'application/json'}),'led-panel-library.json');$('library-status').textContent='Panel library exported.';}catch(error){$('library-status').textContent=`Export failed: ${error.message}`;}
 });
-$('import-library').addEventListener('click',()=>$('import-file').click());
+$('import-library').addEventListener('click',()=>{if(!compositionEditBlocked())$('import-file').click();});
 $('import-file').addEventListener('change',async e=>{
   const file=e.target.files[0];if(!file)return;
+  if(compositionEditBlocked()){e.target.value='';return;}
   try {
-    const incoming=parseLibrary(await file.text());
+    const contents=await file.text();
+    if(compositionEditBlocked()){e.target.value='';return;}
+    const incoming=parseLibrary(contents);
     const merged=new Map(panels.map(p=>[p.id,p]));
     for(const p of incoming)merged.set(p.id,p);
     panels=[...merged.values()];

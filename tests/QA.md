@@ -1,3 +1,24 @@
+# V1.3 nine positions and composition lock · local verification · 2026-10-30
+
+`npm test`: **48 passing tests** (32 calculation/validation, 16 diagram/report).
+
+`npm run test:browser`: **19 passing checks** in installed Google Chrome through official Playwright (1440px desktop / 390px mobile), with no JavaScript errors.
+
+- All nine anchors are covered for unequal vertical, horizontal and rotated A/B assemblies. Their shared seam, relative geometry, frame bounds, wall gaps and signed overflow remain correct.
+- Configure → lock → move → unlock is verified. Locked composition holds wall sizing, mode, split, fit, models, orientation and every panel-library mutation. Anchors, name, viewing and JSON/summary/PNG exports remain available.
+- Synthetic disabled input/change/submit/button/import events leave saved composition unchanged. A valid import started while unlocked and completed after locking is also rejected without mutation.
+- Every locked anchor survives a reload with the held composition and lock status; unlocking restores editing. Invalid or empty compositions cannot be locked.
+- Old sessions without a lock field restore unlocked, prior alignment migration remains compatible, library imports after unlocking still work, and power/unknown/partial/zero estimates remain covered.
+- Summary, live SVG and the 1800px PNG show lock status. Mobile layout, offline reload, error recovery and existing library/report checks remain covered.
+
+Visually inspected `qa/locked-composition-ui.png` and `qa/locked-composition.png`. Screenshot/download evidence remains in ignored `qa/`.
+
+Independent review found no blocking findings. An independent **576-layout matrix** tested both arrangements, fit/cover, all rotation pairs, empty/nonempty selections and all nine anchor factors, confirming wall gaps, rigid relative geometry, lock equality, unchanged power and report status. Every composition mutation handler was reviewed, including both sides of the asynchronous import boundary.
+
+This extension is committed locally only. No push or deployment was attempted; publication remains pending separate approval after the prior production push denial.
+
+---
+
 # V1.2 whole-assembly alignment correction · 2026-10-30
 
 This correction supersedes V1.1's per-zone positioning. The fitted cabinet blocks now join first and move together as one fixed assembly; the four reported gaps are measured against the whole wall.

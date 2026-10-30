@@ -30,12 +30,15 @@ const snapshot=()=>page.evaluate(async()=>{
   return calculate({...saved.config,zones:saved.config.zones.slice(0,saved.config.mode==='single'?1:2)},saved.panels);
 });
 const alignment=()=>page.locator('#layout-alignment');
-const alignments=['center','top_left','top_right','bottom_left','bottom_right'];
+const alignments=['top_left','top_center','top_right','middle_left','center','middle_right','bottom_left','bottom_center','bottom_right'];
+const lockButton=()=>page.locator('#composition-lock');
+const savedSession=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('led-wall-layout-v1')));
 function assertGroupPlacement(result,value) {
   const {group,wall}=result;
   const dx=wall.width_mm-group.width,dy=wall.height_mm-group.height;
-  const left=value==='center'?dx/2:value.endsWith('right')?dx:0;
-  const bottom=value==='center'?dy/2:value.startsWith('top')?dy:0;
+  const [vertical,horizontal]=value==='center'?['middle','center']:value.split('_');
+  const left=horizontal==='center'?dx/2:horizontal==='right'?dx:0;
+  const bottom=vertical==='middle'?dy/2:vertical==='top'?dy:0;
   assert.equal(group.alignment,value);
   assert.equal(group.x,left);assert.equal(group.y,bottom);
   assert.deepEqual(group.gaps,{left,right:dx-left,top:dy-bottom,bottom});
@@ -50,14 +53,21 @@ try {
   check('desktop default decimal cabinet grid and layout');
 
   assert.equal(await alignment().inputValue(),'center');
+  assert.deepEqual((await alignment().locator('option').evaluateAll(options=>options.map(o=>o.value))).sort(),[...alignments].sort());
+  assert.equal(await lockButton().getAttribute('aria-pressed'),'false');
+  assert.equal((await snapshot()).compositionLocked,false);
   assert.equal(await page.locator('[data-zone][data-field="alignment"]').count(),0);
   await page.locator('#wall-width').fill('2500');
   await page.locator('#wall-height').fill('1500');
   for(const [value,expected] of [
     ['center',{left:50,right:50,top:75,bottom:75}],
     ['top_left',{left:0,right:100,top:0,bottom:150}],
+    ['top_center',{left:50,right:50,top:0,bottom:150}],
     ['top_right',{left:100,right:0,top:0,bottom:150}],
+    ['middle_left',{left:0,right:100,top:75,bottom:75}],
+    ['middle_right',{left:100,right:0,top:75,bottom:75}],
     ['bottom_left',{left:0,right:100,top:150,bottom:0}],
+    ['bottom_center',{left:50,right:50,top:150,bottom:0}],
     ['bottom_right',{left:100,right:0,top:150,bottom:0}],
   ]) {
     await alignment().selectOption(value);
@@ -87,7 +97,7 @@ try {
   await page.locator('#fit-strategy').selectOption('fit_inside');
   await page.locator('#wall-width').fill('4800');
   await page.locator('#wall-height').fill('2700');
-  check('center and four corners show signed frame gaps, overflow and rotated offsets');
+  check('all nine anchors show signed frame gaps, overflow and rotated offsets');
 
   await page.getByLabel('Two zones',{exact:true}).check();
   await page.locator('.zone-result').nth(1).waitFor();
@@ -147,10 +157,142 @@ try {
   }
   await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('false');
   await alignment().selectOption('center');
+  check('unequal vertical, horizontal and rotated grids stay joined at all nine whole-group positions');
+
+  // Set the A/B sizes first, lock them, then move only the complete composition.
+  const unlocked=await snapshot();
+  await page.locator('#manage-library').click();
+  const delayedImport=await page.evaluate(()=>{
+    const stored=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    const panel={...stored.panels[0],id:crypto.randomUUID(),name:'Delayed import blocked by lock'};
+    window.delayedImportJSON=JSON.stringify({version:1,panels:[panel]});
+    const originalText=File.prototype.text;
+    window.restoreImportText=()=>{File.prototype.text=originalText;};
+    File.prototype.text=function(){
+      if(this.name!=='delayed-import.json')return originalText.call(this);
+      return new Promise(resolve=>{window.releaseDelayedImport=()=>resolve(window.delayedImportJSON);});
+    };
+    return window.delayedImportJSON;
+  });
+  await page.locator('#import-file').setInputFiles({name:'delayed-import.json',mimeType:'application/json',buffer:Buffer.from(delayedImport)});
+  await page.waitForFunction(()=>typeof window.releaseDelayedImport==='function');
+  await page.locator('#close-library').click();
+  await lockButton().click();
+  assert.equal(await lockButton().getAttribute('aria-pressed'),'true');
+  assert.match(await lockButton().textContent(),/Unlock composition/i);
+  assert.match(await page.locator('#composition-status').textContent(),/unlock/i);
+  assert.equal((await snapshot()).compositionLocked,true);
+  const sizeInputs='#wall-width,#wall-height,input[name="mode"],#split-direction,#split-offset,#fit-strategy,[data-zone][data-field="panelId"],[data-zone][data-field="rotated"]';
+  assert.equal(await page.locator(sizeInputs).evaluateAll(inputs=>inputs.every(input=>input.disabled)),true);
+  for(const id of ['wall-name','layout-alignment','manage-library','copy-summary','export-png'])assert.equal(await page.locator(`#${id}`).isEnabled(),true,id);
+  await page.locator('#wall-name').fill('Locked A + B assembly');
+  assert.equal((await snapshot()).wall.name,'Locked A + B assembly');
+  const frozen=await savedSession();
+  await page.evaluate(async()=>{
+    window.releaseDelayedImport();window.restoreImportText();
+    await new Promise(resolve=>setTimeout(resolve,50));
+  });
+  assert.deepEqual(await savedSession(),frozen,'an import started unlocked cannot commit after the composition is locked');
+  await page.evaluate(()=>{
+    const input=(id,value,type)=>{
+      const element=document.getElementById(id);element.value=value;
+      element.dispatchEvent(new Event(type,{bubbles:true}));
+    };
+    input('wall-width','9999','input');input('wall-height','9999','input');
+    input('split-direction','horizontal','change');input('split-offset','100','input');
+    input('fit-strategy','cover_wall','change');
+    const mode=document.querySelector('input[name="mode"][value="single"]');
+    mode.checked=true;mode.dispatchEvent(new Event('change',{bubbles:true}));
+    const panel=document.querySelector('[data-zone="0"][data-field="panelId"]');
+    panel.value=panel.options[panel.options.length-1].value;panel.dispatchEvent(new Event('change',{bubbles:true}));
+    const rotation=document.querySelector('[data-zone="0"][data-field="rotated"]');
+    rotation.value='true';rotation.dispatchEvent(new Event('change',{bubbles:true}));
+  });
+  assert.deepEqual(await savedSession(),frozen,'synthetic sizing/model events cannot alter a locked composition');
+  await page.locator('#manage-library').click();
+  assert.equal(await page.locator('#library-dialog').isVisible(),true);
+  for(const id of ['add-panel','import-library','import-file'])assert.equal(await page.locator(`#${id}`).isDisabled(),true,id);
+  assert.equal(await page.locator('#panel-form input:not([type="hidden"]),#panel-form textarea,#panel-form button[type="submit"]').evaluateAll(inputs=>inputs.every(input=>input.disabled)),true);
+  assert.equal(await page.locator('.library-item button[data-action="duplicate"],.library-item button[data-action="delete"]').evaluateAll(buttons=>buttons.every(button=>button.disabled)),true);
+  assert.equal(await page.locator('#export-library').isEnabled(),true);
+  const lockedJsonEvent=page.waitForEvent('download');
+  await page.locator('#export-library').click();
+  await (await lockedJsonEvent).saveAs(resolve(root,'qa/locked-library.json'));
+  const lockedLibrary=JSON.parse(await readFile(resolve(root,'qa/locked-library.json'),'utf8'));
+  assert.equal(lockedLibrary.panels.length,frozen.panels.length);
+  const blockedMutations=await page.evaluate(async()=>{
+    const dispatchClick=element=>element.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+    const form=document.getElementById('panel-form');
+    form.elements.name.value='Blocked edit';form.elements.active_width_mm.value='100';
+    form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    dispatchClick(document.getElementById('add-panel'));
+    dispatchClick(document.querySelector('.library-item button[data-action="duplicate"]'));
+    dispatchClick(document.querySelector('.library-item button[data-action="delete"]'));
+    dispatchClick(document.getElementById('import-library'));
+    const stored=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    const panel={...stored.panels[0],id:crypto.randomUUID(),name:'Blocked import'};
+    const file=new File([JSON.stringify({version:1,panels:[panel]})],'locked-import.json',{type:'application/json'});
+    const transfer=new DataTransfer();transfer.items.add(file);
+    const input=document.getElementById('import-file');input.files=transfer.files;
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+    // File.text() is asynchronous; allow an unguarded handler to finish before comparison.
+    await file.text();await new Promise(resolve=>setTimeout(resolve,50));
+    return JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+  });
+  assert.deepEqual(blockedMutations,frozen,'synthetic submit/button/import events cannot mutate the locked panel library');
+  await page.locator('#close-library').click();
+  const relativeBefore=unlocked.zones.map(z=>[z.actualX-unlocked.group.x,z.actualY-unlocked.group.y,z.nx,z.ny]);
+  for(const value of alignments) {
+    const anchor=page.locator(`[data-anchor="${value}"]`);
+    if(await anchor.count())await anchor.click();else await alignment().selectOption(value);
+    let locked=await snapshot();
+    assertGroupPlacement(locked,value);
+    assert.equal(locked.compositionLocked,true);
+    assert.deepEqual(locked.zones.map(z=>[z.actualX-locked.group.x,z.actualY-locked.group.y,z.nx,z.ny]),relativeBefore,'locked A/B arrangement remains rigid');
+    assert.equal((await savedSession()).config.alignment,value);
+    await page.reload();await page.waitForSelector('#diagram svg');
+    assert.equal(await alignment().inputValue(),value);
+    assert.equal(await lockButton().getAttribute('aria-pressed'),'true');
+    assert.equal(await page.locator('#wall-width').isDisabled(),true);
+    locked=await snapshot();assertGroupPlacement(locked,value);
+    assert.equal(locked.compositionLocked,true);
+  }
+  await alignment().selectOption('bottom_center');
+  await context.grantPermissions(['clipboard-read','clipboard-write']);
+  await page.locator('#copy-summary').click();
+  const lockedSummary=await page.evaluate(()=>navigator.clipboard.readText());
+  assert.match(lockedSummary,/Locked A \+ B assembly/);
+  assert.match(lockedSummary,/Composition: Locked/);
+  const lockedReport=await page.evaluate(async()=>{
+    const {calculate}=await import('./core.js');const {renderDiagram}=await import('./diagram.js');
+    const saved=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    return renderDiagram(calculate(saved.config,saved.panels),{report:true});
+  });
+  assert.match(lockedReport,/Composition: Locked/);
+  const lockedPngEvent=page.waitForEvent('download');
+  await page.locator('#export-png').click();
+  await (await lockedPngEvent).saveAs(resolve(root,'qa/locked-composition.png'));
+  const lockedPng=await readFile(resolve(root,'qa/locked-composition.png'));
+  assert.equal(lockedPng.readUInt32BE(16),1800);
+  await page.screenshot({path:resolve(root,'qa/locked-composition-ui.png'),fullPage:true});
+  await lockButton().click();
+  assert.equal(await lockButton().getAttribute('aria-pressed'),'false');
+  assert.match(await lockButton().textContent(),/Lock composition/i);
+  assert.equal((await snapshot()).compositionLocked,false);
+  assert.equal(await page.locator(sizeInputs).evaluateAll(inputs=>inputs.every(input=>!input.disabled)),true);
+  await page.locator('#wall-width').fill('3000');
+  assert.equal((await snapshot()).wall.width_mm,3000);
+  await page.locator('#manage-library').click();
+  for(const id of ['add-panel','import-library'])assert.equal(await page.locator(`#${id}`).isEnabled(),true,id);
+  assert.equal(await page.locator('#panel-form [name="name"]').isEnabled(),true);
+  assert.equal(await page.locator('#panel-form button[type="submit"]').isEnabled(),true);
+  await page.locator('#close-library').click();
+  await page.locator('#wall-name').fill('Main stage');
+  await alignment().selectOption('center');
   await page.locator('#wall-width').fill('4800');
   await page.locator('#wall-height').fill('2700');
   await page.locator('#split-direction').selectOption('vertical');
-  check('unequal vertical, horizontal and rotated grids stay joined at all five whole-group positions');
+  check('lock preserves combined A/B sizes and library against direct events; all nine locations, reloads and exports remain available');
 
   await page.locator('#split-offset').fill('2500');
   await page.locator('#fit-strategy').selectOption('cover_wall');
@@ -417,6 +559,9 @@ try {
 
   await page.locator('#fit-strategy').selectOption('exact_only');
   assert.equal(await page.locator('#error').isVisible(),true);
+  assert.equal(await lockButton().isDisabled(),true);
+  await lockButton().dispatchEvent('click');
+  assert.equal((await savedSession()).config.compositionLocked,false);
   assert.match(await page.locator('#error').textContent(),/Fit inside:.*cover wall:/);
   await page.locator('#fit-strategy').selectOption('fit_inside');
   await page.locator('#split-direction').selectOption('horizontal');
@@ -429,6 +574,9 @@ try {
   await page.locator('#wall-width').fill('10');
   assert.match(await page.locator('.metric').first().textContent(),/0/);
   assert.match(await page.locator('#results').textContent(),/0 × 0 px/);
+  assert.equal(await lockButton().isDisabled(),true);
+  await lockButton().dispatchEvent('click');
+  assert.equal((await savedSession()).config.compositionLocked,false);
   assert.equal(await page.locator('#results').textContent().then(s=>/NaN|Infinity/.test(s)),false);
   await page.locator('#wall-width').fill('4800');
   check('exact error suggestions, horizontal split validation, zero-fit no fake canvas');

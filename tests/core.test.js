@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePanel, parseLibrary, orientPanel, calculate, alignmentName, gapText, powerText, resolveAlignment } from '../core.js';
+import { normalizePanel, parseLibrary, orientPanel, calculate, ALIGNMENTS, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked } from '../core.js';
 
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const panel = (overrides = {}) => ({ id: uuid(1), name: 'FAKE 600', active_width_mm: 600, active_height_mm: 337.5, resolution_w: 192, resolution_h: 108, rotatable: true, ...overrides });
@@ -230,14 +230,19 @@ test('wall, split, selection and numerical-range validation', () => {
   assert.throws(() => calculate(config({ wall: { width_mm: 1e-310, height_mm: 1 } }), [panel()]), /too small/);
 });
 
-test('one whole-assembly alignment controls center and all corners using cabinet frames', () => {
+test('all nine visual-order alignments move one complete assembly using cabinet frames', () => {
   const positions = {
-    center: [50, 25, { left: 50, right: 50, top: 25, bottom: 25 }],
     top_left: [0, 50, { left: 0, right: 100, top: 0, bottom: 50 }],
+    top_center: [50, 50, { left: 50, right: 50, top: 0, bottom: 50 }],
     top_right: [100, 50, { left: 100, right: 0, top: 0, bottom: 50 }],
+    middle_left: [0, 25, { left: 0, right: 100, top: 25, bottom: 25 }],
+    center: [50, 25, { left: 50, right: 50, top: 25, bottom: 25 }],
+    middle_right: [100, 25, { left: 100, right: 0, top: 25, bottom: 25 }],
     bottom_left: [0, 0, { left: 0, right: 100, top: 50, bottom: 0 }],
+    bottom_center: [50, 0, { left: 50, right: 50, top: 50, bottom: 0 }],
     bottom_right: [100, 0, { left: 100, right: 0, top: 50, bottom: 0 }],
   };
+  assert.deepEqual(Object.keys(ALIGNMENTS), Object.keys(positions));
   for (const [alignment, expected] of Object.entries(positions)) {
     const r = calculate(config({ alignment, wall: { width_mm: 2500, height_mm: 1400 } }), [panel({ active_width_mm: 580, frame_width_mm: 600 })]);
     assert.deepEqual([r.group.x, r.group.y, r.group.gaps], expected, alignment);
@@ -259,7 +264,7 @@ test('global alignment migration validates one choice and ignores obsolete secon
   const cfg = config({ mode: 'two_zones', alignment: 'center', split: { direction: 'vertical', offset_mm: 1200 }, zones: [{ panelId: uuid(1), alignment: 'bad' }, { panelId: uuid(1), alignment: 'also bad' }] });
   assert.equal(calculate(cfg, [panel()]).alignment, 'center', 'explicit global selection wins');
   assert.equal(calculate({ ...cfg, alignment: undefined, zones: [{ panelId: uuid(1), alignment: 'top_left' }, cfg.zones[1]] }, [panel()]).alignment, 'top_left');
-  for (const alignment of ['middle_left', '', null, false, 0, {}]) assert.throws(() => calculate(config({ alignment }), [panel()]), /valid alignment/);
+  for (const alignment of ['upper_left', '', null, false, 0, {}]) assert.throws(() => calculate(config({ alignment }), [panel()]), /valid alignment/);
   assert.throws(() => resolveAlignment({ zones: [{ alignment: 'bad' }] }), /valid alignment/);
 });
 
@@ -277,14 +282,14 @@ test('whole-assembly overflow stays signed, including rotation and exact toleran
   assert.ok(exact.warnings.some(w => w.level === 'red' && /Assembly overflows/.test(w.message)));
 });
 
-test('unequal vertical and horizontal zones remain one rigid joined silhouette for all five alignments', () => {
+test('unequal vertical and horizontal zones remain one rigid joined silhouette for all nine alignments', () => {
   const other = panel({ id: uuid(2), active_width_mm: 350, active_height_mm: 300, resolution_w: 112, resolution_h: 96 });
   for (const direction of ['vertical', 'horizontal']) {
     const cfg = config({ wall: { width_mm: 2500, height_mm: 1400 }, mode: 'two_zones', split: { direction, offset_mm: direction === 'vertical' ? 1250 : 700 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(2) }] });
     const baseline = calculate({ ...cfg, alignment: 'bottom_left' }, [panel(), other]);
     const expectedSize = direction === 'vertical' ? [2250, 1350] : [2450, 1275];
     assert.deepEqual([baseline.group.width, baseline.group.height], expectedSize);
-    for (const alignment of ['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right']) {
+    for (const alignment of Object.keys(ALIGNMENTS)) {
       const r = calculate({ ...cfg, alignment }, [panel(), other]);
       const [a, b] = r.zones;
       assert.deepEqual(r.zones.map(z => z.count), baseline.zones.map(z => z.count));
@@ -292,8 +297,8 @@ test('unequal vertical and horizontal zones remain one rigid joined silhouette f
       assert.deepEqual([a.actualX - r.group.x, a.actualY - r.group.y], [0, 0]);
       assert.deepEqual([b.actualX - r.group.x, b.actualY - r.group.y], direction === 'vertical' ? [a.actualWidth, 0] : [0, a.actualHeight]);
       assert.equal(direction === 'vertical' ? a.actualX + a.actualWidth : a.actualY + a.actualHeight, direction === 'vertical' ? b.actualX : b.actualY, 'no internal gap or overlap');
-      const expectedX = alignment === 'center' ? r.group.deltaW / 2 : alignment.endsWith('right') ? r.group.deltaW : 0;
-      const expectedY = alignment === 'center' ? r.group.deltaH / 2 : alignment.startsWith('top') ? r.group.deltaH : 0;
+      const expectedX = alignment.endsWith('center') ? r.group.deltaW / 2 : alignment.endsWith('right') ? r.group.deltaW : 0;
+      const expectedY = alignment === 'center' || alignment.startsWith('middle_') ? r.group.deltaH / 2 : alignment.startsWith('top') ? r.group.deltaH : 0;
       assert.deepEqual([r.group.x, r.group.y], [expectedX, expectedY]);
       assert.equal(r.group.gaps.left + r.group.width + r.group.gaps.right, 2500);
       assert.equal(r.group.gaps.bottom + r.group.height + r.group.gaps.top, 1400);
@@ -331,6 +336,77 @@ test('empty zones reserve no space and all-empty assemblies stay explicit', () =
     const empty = calculate({ ...cfg, zones: [{ panelId: uuid(2) }, { panelId: uuid(2) }] }, [panel(), big]);
     assert.deepEqual([empty.group.width, empty.group.height, empty.group.hasCabinets, empty.group.x, empty.group.y], [0, 0, false, 650, 650]);
     assert.equal(empty.totalCount, 0);
+  }
+});
+
+test('all nine locations preserve joined positions with rotation, overflow and exact residuals', () => {
+  const other = panel({ id: uuid(2), active_width_mm: 350, active_height_mm: 300, resolution_w: 112, resolution_h: 96 });
+  const locations = { top_left: [0, 1], top_center: [.5, 1], top_right: [1, 1], middle_left: [0, .5], center: [.5, .5], middle_right: [1, .5], bottom_left: [0, 0], bottom_center: [.5, 0], bottom_right: [1, 0] };
+  for (const direction of ['vertical', 'horizontal']) for (const scenario of ['rotated', 'cover', 'exact']) {
+    const vertical = direction === 'vertical';
+    const cfg = config({
+      wall: scenario === 'exact' ? (vertical ? { width_mm: 2599.5, height_mm: 2699.5 } : { width_mm: 4199.5, height_mm: 1274.5 }) : { width_mm: 2500, height_mm: 1400 },
+      mode: 'two_zones',
+      strategy: scenario === 'exact' ? 'exact_only' : scenario === 'cover' ? 'cover_wall' : 'fit_inside',
+      split: { direction, offset_mm: scenario === 'exact' ? (vertical ? 1199.75 : 674.75) : vertical ? 1250 : 700 },
+      zones: [{ panelId: uuid(1) }, { panelId: uuid(2), rotated: scenario === 'rotated' }],
+    });
+    const baseline = calculate({ ...cfg, alignment: 'bottom_left' }, [panel(), other]);
+    for (const [alignment, [fx, fy]] of Object.entries(locations)) {
+      const r = calculate({ ...cfg, alignment, compositionLocked: true }, [panel(), other]);
+      assert.deepEqual([r.group.width, r.group.height], [baseline.group.width, baseline.group.height]);
+      close(r.group.x, r.group.deltaW * fx);
+      close(r.group.y, r.group.deltaH * fy);
+      assert.deepEqual(r.zones.map(z => [z.nx, z.ny, z.count, z.rotated]), baseline.zones.map(z => [z.nx, z.ny, z.count, z.rotated]));
+      for (const [index, zone] of r.zones.entries()) {
+        close(zone.actualX - r.group.x, baseline.zones[index].actualX);
+        close(zone.actualY - r.group.y, baseline.zones[index].actualY);
+      }
+      const [a, b] = r.zones;
+      close(vertical ? a.actualX + a.actualWidth : a.actualY + a.actualHeight, vertical ? b.actualX : b.actualY);
+      if (scenario !== 'rotated') {
+        assert.ok(r.group.deltaW < 0 && r.group.deltaH < 0);
+        assert.ok(r.warnings.some(w => w.level === 'red' && /Assembly overflows/.test(w.message)));
+        assert.equal(r.canvas.combined, false);
+      }
+    }
+  }
+});
+
+test('all nine locations handle an empty zone or empty assembly without reserving size', () => {
+  const big = panel({ id: uuid(2), active_width_mm: 2000, active_height_mm: 2000, resolution_w: 100, resolution_h: 100 });
+  for (const direction of ['vertical', 'horizontal']) for (const alignment of Object.keys(ALIGNMENTS)) for (const ids of [[uuid(1), uuid(2)], [uuid(2), uuid(1)], [uuid(2), uuid(2)]]) {
+    const r = calculate(config({ alignment, wall: { width_mm: 1300, height_mm: 1300 }, mode: 'two_zones', split: { direction, offset_mm: 650 }, zones: ids.map(panelId => ({ panelId })) }), [panel(), big]);
+    const installed = r.zones.filter(z => z.count);
+    assert.equal(r.group.hasCabinets, installed.length > 0);
+    assert.equal(r.group.width, installed[0]?.actualWidth ?? 0);
+    assert.equal(r.group.height, installed[0]?.actualHeight ?? 0);
+    if (installed.length) assert.deepEqual([installed[0].actualX, installed[0].actualY], [r.group.x, r.group.y]);
+    assert.equal(r.group.gaps.left + r.group.width + r.group.gaps.right, 1300);
+    assert.equal(r.group.gaps.bottom + r.group.height + r.group.gaps.top, 1300);
+  }
+});
+
+test('composition lock validates a persisted edit-guard flag without changing calculations', () => {
+  assert.equal(resolveCompositionLocked(config()), false);
+  assert.equal(calculate(config(), [panel()]).compositionLocked, false);
+  const cfg = config({ compositionLocked: true, alignment: 'middle_right', wall: { width_mm: 2500, height_mm: 1400 } });
+  const persisted = JSON.parse(JSON.stringify(cfg));
+  assert.equal(resolveCompositionLocked(persisted), true);
+  const locked = calculate(persisted, [panel({ typical_power_w: 100, max_power_w: 200 })]);
+  const unlocked = calculate({ ...persisted, compositionLocked: false }, [panel({ typical_power_w: 100, max_power_w: 200 })]);
+  assert.equal(locked.compositionLocked, true);
+  assert.deepEqual({ ...locked, compositionLocked: false }, unlocked);
+  for (const compositionLocked of [null, '', 'true', 'false', 0, 1, {}, []]) {
+    assert.throws(() => resolveCompositionLocked({ compositionLocked }), /Composition lock must be true or false/);
+    assert.throws(() => calculate(config({ compositionLocked }), [panel()]), /Composition lock must be true or false/);
+  }
+  for (const alignment of Object.keys(ALIGNMENTS)) {
+    const moved = calculate({ ...persisted, alignment }, [panel({ typical_power_w: 100, max_power_w: 200 })]);
+    assert.equal(moved.compositionLocked, true);
+    assert.deepEqual(moved.counts, locked.counts);
+    assert.deepEqual(moved.power, locked.power);
+    assert.deepEqual(moved.zones.map(z => [z.nx, z.ny]), locked.zones.map(z => [z.nx, z.ny]));
   }
 });
 
