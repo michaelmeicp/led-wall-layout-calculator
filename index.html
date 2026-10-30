@@ -8,29 +8,37 @@
   <title>LED Wall Layout Calculator</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./converter.css">
   <script type="module" src="./app.js"></script>
+  <script type="module" src="./converter-ui.js"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./" aria-label="LED Wall Layout Calculator home"><span class="brandmark" aria-hidden="true">▦</span><span>FIELDPLAN <small>LED WALL TOOLS</small></span></a>
-    <div class="topmeta"><span class="version">V1.3</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
+    <div class="topmeta"><span class="version">V1.4</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
   </header>
   <main>
-    <div class="page-heading"><div><div class="eyebrow">LAYOUT WORKSPACE</div><h1>LED Wall Layout Calculator</h1><p>From cabinet dimensions to a clear wall plan.</p></div><span class="privacy-note">Local calculations · No account required</span></div>
+    <div class="page-heading"><div><div class="eyebrow">LAYOUT WORKSPACE</div><h1>LED Wall Layout Calculator</h1><p>Build the LED assembly, then place it inside the outer wall.</p></div><span class="privacy-note">Local calculations · No account required</span></div>
+    <div class="worksheet-tabs" role="tablist" aria-label="LED worksheets"><button id="wall-layout-tab" type="button" role="tab" aria-selected="true" aria-controls="wall-worksheet">Wall layout</button><button id="pixel-converter-tab" type="button" role="tab" aria-selected="false" aria-controls="conversion-worksheet" tabindex="-1">Active size ↔ pixels</button></div>
+    <section id="wall-worksheet" role="tabpanel" aria-labelledby="wall-layout-tab">
+    <div class="example-banner"><div><strong>Combine A + B, then center the whole LED.</strong><p>Set cabinet columns and rows separately from the wall. The example shows empty space on all four sides.</p></div><button id="unlock-from-example" type="button" class="secondary" hidden>Unlock composition</button><button id="load-example" type="button" class="secondary">Load 8 m × 3 m example</button></div>
     <div class="workspace">
       <aside class="controls" aria-label="Layout inputs">
         <section class="card">
-          <div class="section-title"><span class="step">01</span><h2>Define the wall</h2><span class="unit-tag">mm</span></div>
+          <div class="section-title"><span class="step">01</span><h2>Outer wall / opening</h2><span class="unit-tag">mm</span></div>
           <label>Wall name <span class="optional">optional</span><input id="wall-name" type="text" placeholder="e.g. Main stage" maxlength="160"></label>
-          <div class="pair"><label>Width<input id="wall-width" type="number" min="0" step="any" inputmode="decimal"></label><label>Height<input id="wall-height" type="number" min="0" step="any" inputmode="decimal"></label></div>
-          <fieldset class="segmented"><legend>Layout mode</legend><label><input type="radio" name="mode" value="single" checked><span>Single panel</span></label><label><input type="radio" name="mode" value="two_zones"><span>Two zones</span></label></fieldset>
+          <div class="pair"><label>Wall width (mm)<input id="wall-width" type="number" min="0" step="any" inputmode="decimal"></label><label>Wall height (mm)<input id="wall-height" type="number" min="0" step="any" inputmode="decimal"></label></div>
           <div id="split-controls" hidden><div class="pair"><label>Split direction<select id="split-direction"><option value="vertical">Vertical · left / right</option><option value="horizontal">Horizontal · bottom / top</option></select></label><label><span id="offset-label">Cut from left (mm)</span><input id="split-offset" type="number" min="0" step="any"></label></div></div>
         </section>
         <section class="card">
-          <div class="section-title"><span class="step">02</span><h2>Choose the cabinets</h2><button class="text-button" id="manage-library" type="button">Panel library ↗</button></div>
+          <div class="section-title"><span class="step">02</span><h2>Build the LED assembly</h2><button class="text-button" id="manage-library" type="button">Panel library ↗</button></div>
+          <label>LED sizing<select id="sizing-mode"><option value="manual">Set cabinet counts</option><option value="auto_fit">Auto fit wall</option></select></label>
+          <p id="sizing-note" class="helper sizing-note"></p>
+          <fieldset class="segmented"><legend>LED types</legend><label><input type="radio" name="mode" value="single" checked><span>Type A only</span></label><label><input type="radio" name="mode" value="two_zones"><span>A + B combined</span></label></fieldset>
+          <label id="arrangement-controls">Join A + B<select id="arrangement"><option value="side_by_side">Side by side · A left / B right</option><option value="stacked">Stacked · A below / B above</option></select></label>
           <div id="zone-selectors"></div>
-          <label>Fit strategy<select id="fit-strategy"><option value="fit_inside">Fit inside · floor</option><option value="cover_wall">Cover wall · ceil</option><option value="exact_only">Exact only · ±0.5 mm / axis</option></select></label>
-          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. The fitted grids join first, then move together to one of nine wall positions.</p>
+          <div id="auto-fit-controls"><label>Fit strategy<select id="fit-strategy"><option value="fit_inside">Fit inside · floor</option><option value="cover_wall">Cover wall · ceil</option><option value="exact_only">Exact only · ±0.5 mm / axis</option></select></label>
+          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. The fitted grids join first, then move together to one of nine wall positions.</p></div>
         </section>
         <section class="card placement-card" aria-labelledby="placement-title">
           <div class="section-title"><span class="step">03</span><h2 id="placement-title">Lock &amp; place the group</h2></div>
@@ -48,17 +56,19 @@
       </aside>
       <div class="output">
         <section class="card preview-card" aria-labelledby="preview-title">
-          <div class="preview-header"><div><div class="eyebrow">FRONT ELEVATION</div><h2 id="preview-title">Your wall plan</h2></div><span class="live-badge"><i></i> Live preview</span></div>
+          <div class="preview-header"><div><div class="eyebrow">FRONT ELEVATION</div><h2 id="preview-title">LED inside the outer wall</h2><p id="assembly-size" class="assembly-size"></p></div><span class="live-badge"><i></i> Live preview</span></div>
           <div id="error" class="error-box" role="alert" hidden></div>
           <div id="diagram" class="diagram" aria-live="off"></div>
-          <div class="preview-footer"><span>Frame geometry · centered active area</span><span>All dimensions in mm</span></div>
+          <div class="preview-footer"><span>Dark frame = outer wall · colored blocks = LED</span><span>All dimensions in mm</span></div>
         </section>
         <section id="results" aria-live="polite" aria-atomic="true"></section>
         <section class="export-bar"><div><strong>Take the plan with you</strong><p>Full report, including both zones and warnings.</p></div><div class="actions"><button id="copy-summary" type="button" class="secondary">Copy summary</button><button id="export-png" type="button" class="primary">Export PNG ↓</button></div></section>
         <p id="action-status" role="status" class="status-message"></p>
       </div>
     </div>
-    <footer>LED Wall Layout Calculator · V1.3 <span>Layout, pixels &amp; power estimates.</span></footer>
+    </section>
+    <section id="conversion-worksheet" role="tabpanel" aria-labelledby="pixel-converter-tab" hidden></section>
+    <footer>LED Wall Layout Calculator · V1.4 <span>Layout, pixels &amp; power estimates.</span></footer>
   </main>
   <dialog id="library-dialog" aria-labelledby="library-title">
     <div class="dialog-header"><div><div class="eyebrow">YOUR COLLECTION</div><h2 id="library-title">Panel library</h2></div><button id="close-library" type="button" class="icon-button" aria-label="Close panel library">✕</button></div>

@@ -201,8 +201,17 @@ export function resolveCompositionLocked(config) {
   return config.compositionLocked ?? false;
 }
 
+/** Older sessions infer cabinet quantities from wall allocations. Manual counts
+ * are explicit and remain independent of wall size and placement. */
+export function resolveSizingMode(config) {
+  object(config, 'Layout');
+  const sizingMode = config.sizingMode === undefined ? 'auto_fit' : config.sizingMode;
+  if (!['manual', 'auto_fit'].includes(sizingMode)) throw new Error('Choose manual cabinet counts or automatic fit.');
+  return sizingMode;
+}
+
 /** Signed gaps are assembly-to-wall clearances; negative means overflow. */
-export function gapText(value) { return `${format(Math.abs(value))} mm ${value < 0 ? 'overflow' : 'gap'}`; }
+export function gapText(value) { return `${value < 0 ? 'overflow' : 'gap'} ${format(Math.abs(value))} mm`; }
 
 export function powerText(metric) {
   if (metric.status === 'unknown') return 'Unknown';
@@ -224,14 +233,14 @@ function aggregatePower(entries) {
   return { typical: metric('typical_power_w'), maximum: metric('max_power_w') };
 }
 
-function makeZone(rectangle, choice, library, strategy) {
+function makeZone(rectangle, choice, library, strategy, sizingMode) {
   object(choice, `${rectangle.label} selection`);
   const panelId = typeof choice.panelId === 'string' ? choice.panelId.toLowerCase() : choice.panelId;
   const raw = library.find(panel => panel.id === panelId);
   if (!raw) throw new Error(`Choose a library panel for ${rectangle.label}.`);
   const panel = orientPanel(raw, choice.rotated ?? false);
-  const nx = axisCount(rectangle.width, panel.frame_width_mm, strategy, `${rectangle.label} width`);
-  const ny = axisCount(rectangle.height, panel.frame_height_mm, strategy, `${rectangle.label} height`);
+  const nx = sizingMode === 'manual' ? positive(choice.columns, `${rectangle.label} columns`, true) : axisCount(rectangle.width, panel.frame_width_mm, strategy, `${rectangle.label} width`);
+  const ny = sizingMode === 'manual' ? positive(choice.rows, `${rectangle.label} rows`, true) : axisCount(rectangle.height, panel.frame_height_mm, strategy, `${rectangle.label} height`);
   const count = finite(nx * ny, 'Cabinet count');
   // An empty axis means no complete cabinets, no footprint, and no pixel canvas.
   const actualWidth = count ? finite(nx * panel.frame_width_mm, 'Actual width') : 0;
@@ -244,10 +253,10 @@ function makeZone(rectangle, choice, library, strategy) {
   const utilization = finite((actualWidth / rectangle.width) * (actualHeight / rectangle.height), 'Area utilization');
   const warnings = panel.warnings.map(item => ({ ...item }));
   if (!count) warnings.push(warn('amber', `${rectangle.label} is too small for a complete cabinet (${nx} × ${ny}); no active canvas.`));
-  if (deltaW < -precision(rectangle.width, actualWidth) || deltaH < -precision(rectangle.height, actualHeight)) {
+  if (sizingMode === 'auto_fit' && (deltaW < -precision(rectangle.width, actualWidth) || deltaH < -precision(rectangle.height, actualHeight))) {
     warnings.push(warn('amber', `${rectangle.label} exceeds its sizing allocation: ${format(Math.max(0, -deltaW))} mm horizontally, ${format(Math.max(0, -deltaH))} mm vertically. Wall clearance is measured for the complete assembly.`));
   }
-  if (deltaW > precision(rectangle.width, actualWidth) || deltaH > precision(rectangle.height, actualHeight)) {
+  if (sizingMode === 'auto_fit' && (deltaW > precision(rectangle.width, actualWidth) || deltaH > precision(rectangle.height, actualHeight))) {
     warnings.push(warn('amber', `${rectangle.label} underfills its sizing allocation: ${format(Math.max(0, deltaW))} mm horizontally, ${format(Math.max(0, deltaH))} mm vertically. Cabinets are packed together before assembly alignment.`));
   }
   const power = aggregatePower([{ panel, count }]);
@@ -255,8 +264,7 @@ function makeZone(rectangle, choice, library, strategy) {
 }
 
 /** Pack frames edge-to-edge before translating the entire fixed silhouette. */
-function packGroup(zones, wall, mode, split, alignment) {
-  const packing = mode === 'single' ? 'single' : split.direction;
+function packGroup(zones, wall, packing, alignment) {
   const vertical = packing === 'vertical';
   const width = finite(vertical ? zones.reduce((sum, zone) => sum + zone.actualWidth, 0) : Math.max(...zones.map(zone => zone.actualWidth)), 'Assembly width');
   const height = finite(packing === 'horizontal' ? zones.reduce((sum, zone) => sum + zone.actualHeight, 0) : Math.max(...zones.map(zone => zone.actualHeight)), 'Assembly height');
@@ -274,7 +282,7 @@ function packGroup(zones, wall, mode, split, alignment) {
   return { alignment, x, y, width, height, gaps, deltaW, deltaH, hasCabinets: zones.some(zone => zone.count > 0), packing };
 }
 
-function canvasFor(zones, mode, split, group) {
+function canvasFor(zones, mode, group) {
   const no = reason => ({ combined: false, reason: `Processor mapping / two canvases: ${reason}` });
   if (zones.some(zone => !zone.count)) return { combined: false, reason: 'No combined canvas: at least one zone has no complete cabinets.' };
   if (mode === 'single') return { combined: true, width: zones[0].resolutionW, height: zones[0].resolutionH, reason: 'Single-zone pixel canvas.' };
@@ -282,7 +290,7 @@ function canvasFor(zones, mode, split, group) {
   if (!same(a.panel.actual_pitch_x_mm, b.panel.actual_pitch_x_mm) || !same(a.panel.actual_pitch_y_mm, b.panel.actual_pitch_y_mm)) return no('actual derived pixel pitches differ.');
   if (zones.some(zone => !same(zone.panel.active_width_mm, zone.panel.frame_width_mm) || !same(zone.panel.active_height_mm, zone.panel.frame_height_mm))) return no('frame insets create incompatible active-area gaps.');
   if (group.deltaW < -precision(group.width, group.width + group.deltaW) || group.deltaH < -precision(group.height, group.height + group.deltaH)) return no('the complete assembly overflows the wall.');
-  if (split.direction === 'vertical') {
+  if (group.packing === 'vertical') {
     if (!same(a.actualX + a.actualWidth, b.actualX) || !same(a.actualY, b.actualY) || !same(a.actualHeight, b.actualHeight) || a.resolutionH !== b.resolutionH) return no('left and right grids do not abut with matching aligned vertical pixel spans.');
     return { combined: true, width: finite(a.resolutionW + b.resolutionW, 'Combined pixel width'), height: a.resolutionH, reason: 'Clean vertical abutment; equal actual X/Y pitches and aligned pixel rows.' };
   }
@@ -290,7 +298,8 @@ function canvasFor(zones, mode, split, group) {
   return { combined: true, width: a.resolutionW, height: finite(a.resolutionH + b.resolutionH, 'Combined pixel height'), reason: 'Clean horizontal abutment; equal actual X/Y pitches and aligned pixel columns.' };
 }
 
-/** Split allocations determine counts; joined cabinets align as one assembly. */
+/** Manual counts or automatic fit determine quantities; the assembly then moves
+ * as one group, independently of sizing and arrangement. */
 export function calculate(config, panels) {
   object(config, 'Layout');
   object(config.wall, 'Wall');
@@ -306,12 +315,18 @@ export function calculate(config, panels) {
   if (!['fit_inside', 'cover_wall', 'exact_only'].includes(strategy)) throw new Error('Choose a valid fit strategy.');
   const alignment = resolveAlignment(config);
   const compositionLocked = resolveCompositionLocked(config);
+  const sizingMode = resolveSizingMode(config);
   if (!Array.isArray(panels)) throw new Error('Panel library must be an array.');
   const library = parseLibrary(panels);
   if (!Array.isArray(config.zones) || config.zones.length !== (mode === 'single' ? 1 : 2)) throw new Error(`Provide exactly ${mode === 'single' ? 'one zone' : 'two zones'}.`);
   let split = null;
+  let arrangement = 'side_by_side';
   let rectangles = [{ label: 'Wall', x: 0, y: 0, width: wall.width_mm, height: wall.height_mm }];
-  if (mode === 'two_zones') {
+  if (sizingMode === 'manual') {
+    arrangement = config.arrangement === undefined ? 'side_by_side' : config.arrangement;
+    if (!['side_by_side', 'stacked'].includes(arrangement)) throw new Error('Choose side by side or stacked cabinet arrangement.');
+    rectangles = config.zones.map((choice, index) => ({ label: `Type ${index === 0 ? 'A' : 'B'}`, x: 0, y: 0, width: wall.width_mm, height: wall.height_mm }));
+  } else if (mode === 'two_zones') {
     object(config.split, 'Split');
     const direction = config.split.direction;
     if (!['vertical', 'horizontal'].includes(direction)) throw new Error('Choose a vertical or horizontal split.');
@@ -319,12 +334,14 @@ export function calculate(config, panels) {
     const span = direction === 'vertical' ? wall.width_mm : wall.height_mm;
     if (offset_mm >= span) throw new Error(`Split offset must lie strictly inside the wall (greater than 0 and less than ${format(span)} mm).`);
     split = { direction, offset_mm };
+    arrangement = direction === 'vertical' ? 'side_by_side' : 'stacked';
     rectangles = direction === 'vertical'
       ? [{ label: 'Left zone', x: 0, y: 0, width: offset_mm, height: wall.height_mm }, { label: 'Right zone', x: offset_mm, y: 0, width: wall.width_mm - offset_mm, height: wall.height_mm }]
       : [{ label: 'Bottom zone', x: 0, y: 0, width: wall.width_mm, height: offset_mm }, { label: 'Top zone', x: 0, y: offset_mm, width: wall.width_mm, height: wall.height_mm - offset_mm }];
   }
-  const zones = rectangles.map((rectangle, index) => makeZone(rectangle, config.zones[index], library, strategy));
-  const group = packGroup(zones, wall, mode, split, alignment);
+  const zones = rectangles.map((rectangle, index) => makeZone(rectangle, config.zones[index], library, strategy, sizingMode));
+  const packing = mode === 'single' ? 'single' : arrangement === 'side_by_side' ? 'vertical' : 'horizontal';
+  const group = packGroup(zones, wall, packing, alignment);
   const warnings = zones.flatMap(zone => zone.warnings);
   if (group.deltaW < -precision(wall.width_mm, group.width) || group.deltaH < -precision(wall.height_mm, group.height)) {
     warnings.push(warn('red', `Assembly overflows the wall: ${format(Math.max(0, -group.deltaW))} mm horizontally, ${format(Math.max(0, -group.deltaH))} mm vertically. See the signed assembly edge clearances.`));
@@ -344,5 +361,5 @@ export function calculate(config, panels) {
   const totalCount = finite(zones.reduce((sum, zone) => sum + zone.count, 0), 'Total cabinet count');
   const utilization = finite(zones.reduce((sum, zone) => sum + zone.utilization * (zone.width / wall.width_mm) * (zone.height / wall.height_mm), 0), 'Total area utilization');
   const counts = [...countMap.values()].map(entry => ({ ...entry, power: aggregatePower(zones.filter(zone => zone.panel.id === entry.panelId)) }));
-  return { wall, mode, strategy, split, alignment, compositionLocked, group, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split, group), utilization };
+  return { wall, mode, strategy, sizingMode, arrangement, split, alignment, compositionLocked, group, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, group), utilization };
 }

@@ -1,6 +1,6 @@
 # LED Wall Layout Calculator
 
-A responsive, client-side cabinet planner. Unlimited device-local panel library, one or two rectangular zones, live SVG elevation, lockable whole-layout positioning at nine anchors, per-cabinet power estimates, plain-text summary and full PNG report. Seeded models are fictional. No backend, account, runtime dependencies, pricing, inventory, ordering, 3D, or engineering calculations.
+A responsive, client-side cabinet planner. Unlimited device-local panel library, one or two joined rectangular LED blocks, independent wall and LED dimensions, live SVG elevation, lockable whole-layout positioning at nine anchors, per-cabinet power estimates, plain-text summary and full PNG report. Seeded models are fictional. No backend, account, runtime dependencies, pricing, inventory, ordering, 3D, or engineering calculations.
 
 ## Run & test
 
@@ -17,11 +17,21 @@ Serve this folder with any static HTTP server; opening `index.html` directly as 
 
 Panel IDs are UUIDs. Dimensions are positive mm; pixel resolutions are positive safe integers. Empty frame axes default to active axes. Each frame axis must be at least its active axis; active area is centered in the frame. Rotation requires `rotatable` and swaps frame, active, resolution and derived pitch axes together.
 
-**Frames tile physically. Active area defines pixels.** For each zone sizing allocation, `Nx = floor(target width / frame width)` and likewise Y for Fit inside. Cover wall uses ceil. Actual footprint is `Nx × frame width` by `Ny × frame height`; resolution is `Nx × resolution_w` by `Ny × resolution_h`. An empty axis produces zero cabinets, zero footprint and zero canvas. Utilization is summed frame footprint area / wall area. Packed zones do not overlap; a cover layout can exceed the wall area. Active aggregate dimensions exclude frame gaps; their aspect ratio can differ from the pixel aspect ratio.
+**Frames tile physically. Active area defines pixels.** Manual sizing multiplies the chosen cabinet frame by its explicit positive whole columns/rows. Cabinet counts are independent of the outer wall. Auto fit remains available: for each zone sizing allocation, `Nx = floor(target width / frame width)` and likewise Y for Fit inside. Cover wall uses ceil. Actual footprint is `Nx × frame width` by `Ny × frame height`; resolution is `Nx × resolution_w` by `Ny × resolution_h`. An empty axis produces zero cabinets, zero footprint and zero canvas. Utilization is summed frame footprint area / wall area. Packed zones do not overlap; a cover layout can exceed the wall area. Active aggregate dimensions exclude frame gaps; their aspect ratio can differ from the pixel aspect ratio.
 
 Exact only uses the nearest **positive** integer count on each axis, accepted when the absolute physical residual is **≤0.5 mm per axis**, independently. It can leave a small underfill or overflow. Failure gives floor/ceil alternatives. Floor/ceil never use that tolerance: only roundoff within 16 machine epsilons of a positive integer is corrected, capped at 1e-9 in both quotient and physical mm. Arithmetic outside safe finite bounds is rejected.
 
 Missing resolution axes derive from `round(active mm / pitch mm)` (positive halves round up); zero results are rejected. Explicit resolution wins. Actual pitch is active / resolution, independently for X/Y. A supplied pitch differing by more than 1% raises a warning.
+
+## Active size ↔ pixels worksheet
+
+A separate tab converts active emitting dimensions (never frame dimensions). Its own state uses `led-pixel-converter-v1`; switching tabs preserves both worksheets and does not update the panel library.
+
+- Active width/height plus pitch (mm) gives mathematical pixel width/height. Fractional results are labelled theoretical. A separate half-up whole-pixel suggestion shows realized dimensions and signed dimensional drift; a suggestion below one pixel is unavailable.
+- Positive integer pixel width/height plus pitch gives active dimensions in mm.
+- Active dimensions plus integer pixel width/height gives independent pitch X/Y. A relative X/Y difference above 1% is flagged; no shared pitch is invented.
+
+Pitch is required to uniquely convert size to pixels or vice versa. P1.5 with 1,920 × 1,080 pixels is 2,880 × 1,620 mm. At P1.5, 3,000 × 1,700 mm gives theoretical 2,000 × 1,133.333… pixels; the suggested 2,000 × 1,133 realizes 3,000 × 1,699.5 mm, with height drift −0.5 mm. All required inputs must be positive finite numbers; physical pixel inputs are positive safe integers.
 
 ## Power estimates
 
@@ -31,7 +41,11 @@ Each estimate is the installed cabinet count multiplied by the supplied rating. 
 
 ## Zones, reports & storage
 
-The cut sets the **sizing allocation used for cabinet counts**. Vertical cuts measure from the left; horizontal cuts from the bottom, strictly inside the wall. Fit inside / Cover wall / Exact only still calculate each zone's counts from those allocation dimensions. The allocation cut is not a fixed physical seam after the grids have been fitted and packed.
+**Set cabinet counts** is the fresh-session default. Set the outer wall separately, then select each LED type and enter its columns/rows. Each type has a direct **Edit cabinet dimensions** link to its panel-library record. Choose **Side by side** or **Stacked** to join the two blocks. Wall edits change the empty gaps or overflow, never manual counts. A visible **Load 8 m × 3 m example** button also works for existing saved sessions; it retains the library and reuses compatible fictional cabinets or adds example copies without overwriting user records.
+
+The default example uses an **8,000 × 3,000 mm outer wall**, A at 4 × 4 of the 600 × 337.5 mm cabinet (2,400 × 1,350 mm) and B at 6 × 4 of the 300 × 300 mm cabinet (1,800 × 1,200 mm). The joined LED is **4,200 × 1,350 mm**, 40 cabinets, centered with **left/right gap 1,900 mm and top/bottom gap 825 mm**. The stepped top edge reflects the different block heights; the blocks touch along their shared side.
+
+**Auto fit wall** preserves earlier fitting behavior. Its cut sets the **sizing allocation used for cabinet counts**: from the left for a vertical cut, from the bottom for a horizontal cut. Fit inside / Cover wall / Exact only use those allocation dimensions. The cut is not a fixed physical seam after packing. A wall-filling grid naturally has 0 mm clearance; choose manual counts to make the LED smaller without enlarging the wall. Old sessions without `sizingMode` retain auto fit, their panel choices and count strategy. Fresh sessions start with the manual A+B example.
 
 **Assemble first, position once.** A single cabinet grid is one group. Two zones are packed edge to edge with no added gap:
 
@@ -51,7 +65,7 @@ For example, two vertical allocations can fit A at 1,200 × 1,350 mm and B at 90
 
 Two-zone output includes individual resolutions, packed frame origins and cabinet counts by SKU. A combined canvas requires equal actual X/Y pitches, no frame/active gaps, a joined seam, matching perpendicular pixel spans and no group wall overflow. Otherwise it calls for processor mapping / two canvases.
 
-SVG/PNG reports and copied summaries show the wall, packed frame grids, active insets, actual joined seam, orientation, **one whole-layout alignment and four wall-edge gaps/overflow**, dimensions, composition lock status, power estimates, results and warnings. PNG is 1800px wide. Dense grids use patterns or illustrative coarse lines beyond 1,200 individually drawn cabinets, with labels reduced sooner when too small; numbers are unchanged. Clipboard denial opens a selectable full-text summary. Export failures show a recoverable message.
+SVG/PNG reports and copied summaries show the wall, packed frame grids, active insets, actual joined seam, orientation, **one whole-layout alignment and four explicit wall-edge gap/overflow dimension lines**, dimensions, composition lock status, power estimates, results and warnings. PNG is 1800px wide. Dense grids use patterns or illustrative coarse lines beyond 1,200 individually drawn cabinets, with labels reduced sooner when too small; numbers are unchanged. Clipboard denial opens a selectable full-text summary. Export failures show a recoverable message.
 
 
 Library and last session use `localStorage`, scoped to the browser and site origin. New sessions default to whole-group center. Saved V1.1 per-zone settings migrate the first zone's position to the single whole-layout setting; other per-zone positions are removed. Older V1 sessions without alignment retain bottom-left. Panel choices, rotation, fit, cut and power data are retained. JSON export remains `{ "version": 1, "panels": [...] }`; optional power fields are persisted/exported with each panel, and older files without them load as unknown; import also accepts an array, validates every record before changing anything, and merges by UUID, replacing matching IDs. Names/vendor ≤160 characters; notes ≤2000. No preset limit on panel count; browser storage capacity applies. Export JSON for backup or transfer.

@@ -1,3 +1,21 @@
+# V1.4 manual LED assembly and conversion worksheet · 2026-10-30
+
+The previous implementation centered a group whose counts were still derived from wall-filling allocations. Fresh single-type and A+B examples both exactly filled the wall, hiding the point of placement. The previous live SVG also scaled a full report into the preview, with clearances in body text rather than on four dimension brackets.
+
+This release makes wall dimensions and manual LED counts independent. A visible A+B example, direct cabinet-dimension links and separate manual/auto sizing controls make the intended flow discoverable. Existing sessions preserve automatic fitting and can explicitly load the new example; locked sessions can unlock from the example banner without changing their plan.
+
+**Concrete checked example:** wall8,000×3,000mm; A4×4 of600×337.5mm =2,400×1,350mm; B6×4 of300×300mm =1,800×1,200mm; joined4,200×1,350mm,40cabinets; centered LEFT/RIGHT **gap1,900mm**, TOP/BOTTOM **gap825mm**. Actual bracket endpoints and label boxes are checked against physical wall/group bounds. Oversized and mixed-axis examples quantify each side independently and keep the complete union visible.
+
+`npm test`: **70 passing tests** (38 core,11 conversion,21 diagram/report).
+
+`npm run test:browser`: **24 passing checks** in installed Chrome, desktop1440px and mobile390px, no JavaScript errors. Coverage includes independent manual counts/wall edits, both arrangements/all nine anchors, positive integer validation, four dimension segments/typed labels/box bounds, centered/oversized/mixed-axis PNG and summaries, lock guards/reload/recovery, example library preservation, all legacy auto/power/import/export/offline paths, and isolated conversion worksheet state.
+
+Conversion checks include P1.5 inverses, explicit theoretical fractional pixels versus integer suggestions and realized-size drift, missing/invalid inputs, X/Y pitch disagreement, small decimal half-up cases (.15/.1 and realistic4,990.7/2.6,392.955/3.91), and large supported dimensional drift. Independent code review found and corrected two numeric boundaries; full70 tests and a separate288-layout manual geometry/power/bracket matrix pass.
+
+Screenshots visually inspected: `qa/manual-default-centered.png`, `qa/manual-mobile-diagram.png`, oversized and centered PNG reports, and `qa/conversion-mobile-results.png`. The centered screenshot was saved in Library for user review as `libfile_17cd6b83fa348191bc654a3360871cc4`. Generated evidence remains ignored in `qa/`.
+
+---
+
 # V1.3 nine positions and composition lock · local verification · 2026-10-30
 
 `npm test`: **48 passing tests** (32 calculation/validation, 16 diagram/report).

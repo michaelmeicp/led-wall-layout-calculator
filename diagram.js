@@ -94,6 +94,7 @@ function activeExtents(zone) {
 }
 
 function splitDescription(result) {
+  if (result.sizingMode === 'manual') return `Manual cabinet counts · ${result.mode === 'single' ? 'Single panel type' : result.arrangement === 'stacked' ? 'Stacked A / B' : 'Side by side A / B'}`;
   if (result.mode !== 'two_zones') return 'Single panel type';
   return result.split.direction === 'vertical'
     ? `Vertical sizing split · ${f(result.split.offset_mm)} mm from LEFT · A / B sizing allocations`
@@ -102,7 +103,7 @@ function splitDescription(result) {
 
 function packingDescription(result) {
   if (result.mode !== 'two_zones') return 'Single cabinet block';
-  return result.split.direction === 'vertical'
+  return result.group.packing === 'vertical'
     ? 'Packed assembly: A left / B right, cabinet frames touch; bottom edges align. Unequal heights create a step.'
     : 'Packed assembly: A bottom / B top, cabinet frames touch; left edges align. Unequal widths create a step.';
 }
@@ -115,7 +116,7 @@ export function summaryText(result, date = new Date()) {
     wall.name || 'Untitled wall',
     `Date: ${date.toISOString().slice(0, 10)} (UTC)`,
     `Target: ${f(wall.width_mm)} × ${f(wall.height_mm)} mm; aspect ${ratio(wall.width_mm, wall.height_mm)}`,
-    `Mode: ${result.mode === 'two_zones' ? 'Two zones' : 'Single zone'}; strategy: ${strategyName(result.strategy)}`,
+    `Mode: ${result.mode === 'two_zones' ? 'Two zones' : 'Single zone'}; ${result.sizingMode === 'manual' ? 'manual cabinet counts' : `strategy: ${strategyName(result.strategy)}`}`,
     splitDescription(result),
     packingDescription(result),
     compositionLine(result),
@@ -123,7 +124,7 @@ export function summaryText(result, date = new Date()) {
     `Assembly alignment: ${alignmentName(group)}; group origin (${f(group.x)}, ${f(group.y)}) mm from wall bottom-left`,
     `Assembly frame bounds: ${f(group.width)} × ${f(group.height)} mm`,
     `Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`,
-    result.mode === 'two_zones' ? 'The sizing split determines cabinet counts; it is not a fixed physical seam or assembly anchor.' : '',
+    result.mode === 'two_zones' && result.sizingMode !== 'manual' ? 'The sizing split determines cabinet counts; it is not a fixed physical seam or assembly anchor.' : '',
     '',
   ];
   result.zones.forEach((z, i) => {
@@ -131,14 +132,14 @@ export function summaryText(result, date = new Date()) {
     lines.push(
       `${String.fromCharCode(65 + i)} · ${z.label}`,
       `Model: ${z.panel.name}; orientation: ${z.rotated ? '90° clockwise' : '0° / native'}`,
-      `Sizing allocation: ${f(z.width)} × ${f(z.height)} mm`,
+      ...(result.sizingMode === 'manual' ? [] : [`Sizing allocation: ${f(z.width)} × ${f(z.height)} mm`]),
       `Packed frame origin: (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`,
       `Cabinet: frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm; active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm; ${f(z.panel.resolution_w, 0)} × ${f(z.panel.resolution_h, 0)} px`,
       `Grid: ${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets`,
       `Per-zone resolution: ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px`,
       `Actual frame footprint: ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`,
       `Zone power: ${powerLine(z.power)}`,
-      `Frame area / sizing allocation: ${f(z.utilization * 100)}%; active extent aspect: ${ratio(active.width, active.height)}; pixel aspect: ${ratio(z.resolutionW, z.resolutionH)}`,
+      `${result.sizingMode === 'manual' ? '' : `Frame area / sizing allocation: ${f(z.utilization * 100)}%; `}active extent aspect: ${ratio(active.width, active.height)}; pixel aspect: ${ratio(z.resolutionW, z.resolutionH)}`,
       '',
     );
   });
@@ -158,45 +159,52 @@ export function summaryText(result, date = new Date()) {
 }
 
 export function renderDiagram(result, { report = false, date = new Date() } = {}) {
-  const W = 1200;
-  const wall = result.wall;
-  const zones = result.zones;
-  const group = result.group;
+  const W = 1000;
+  const wall = result.wall, zones = result.zones, group = result.group;
   const colors = colorsFor(result);
   const titleLines = report ? wrap(wall.name || 'Untitled wall', W - 68, 26, true)
     : [shorten(wall.name || 'Untitled wall', W - 68, 26, true)];
   const titleExtra = (titleLines.length - 1) * 29;
-  const subtitleLines = wrap(`Target ${f(wall.width_mm)} × ${f(wall.height_mm)} mm   ·   ${strategyName(result.strategy)}   ·   ${f(result.totalCount, 0)} cabinets`, W - 68, 15);
-  const headerExtra = titleExtra + (subtitleLines.length - 1) * 22;
-  const maxX = Math.max(wall.width_mm, ...zones.map((z) => z.actualX + z.actualWidth));
-  const maxY = Math.max(wall.height_mm, ...zones.map((z) => z.actualY + z.actualHeight));
-  const minX = Math.min(0, ...zones.map((z) => z.actualX));
-  const minY = Math.min(0, ...zones.map((z) => z.actualY));
-  const plot = { x: 94, y: 134 + headerExtra, w: 1014, h: 454 };
+  const subtitleLines = wrap(`WALL · Width ${f(wall.width_mm)} mm · Height ${f(wall.height_mm)} mm`, W - 68, 19, true);
+  const headerExtra = titleExtra + (subtitleLines.length - 1) * 25;
+  const maxX = Math.max(wall.width_mm, group.x + group.width), maxY = Math.max(wall.height_mm, group.y + group.height);
+  const minX = Math.min(0, group.x), minY = Math.min(0, group.y);
+
+  // Four reserved label boxes keep even flush/overflow labels apart. Only the
+  // numerical bracket span is scaled; text is never squeezed into a tiny gap.
+  const labelSpec = (edge) => {
+    const value = group.gaps[edge], number = gapText(value).replace(/^(gap|overflow) /, '');
+    const width = edge === 'top' || edge === 'bottom' ? 260 : 200;
+    const numberSize = [40, 32, 24].find(size => estimatedWidth(number, size, true) <= width - 20) || 24;
+    const numberLines = []; let current = '';
+    for (const char of number) {
+      if (current && estimatedWidth(current + char, numberSize, true) > width - 20) { numberLines.push(current); current = ''; }
+      current += char;
+    }
+    if (current) numberLines.push(current);
+    return { edge, value, numberSize, numberLines, width, height: 74 + numberLines.length * (numberSize + 7) };
+  };
+  const labels = Object.fromEntries(['left','right','top','bottom'].map(edge => [edge,labelSpec(edge)]));
+  const plot = { x: 220, y: 118 + headerExtra + labels.top.height + 22, w: 560, h: 330 };
   const scale = Math.min(plot.w / (maxX - minX || 1), plot.h / (maxY - minY || 1));
   const ox = plot.x + (plot.w - (maxX - minX) * scale) / 2 - minX * scale;
   const oy = plot.y + (plot.h + (maxY - minY) * scale) / 2 + minY * scale;
-  const X = (x) => rounded(ox + x * scale);
-  const Y = (y) => rounded(oy - y * scale);
-  const S = (n) => rounded(n * scale);
+  const X = (x) => rounded(ox + x * scale), Y = (y) => rounded(oy - y * scale), S = (n) => rounded(n * scale);
   const text = (x, y, value, size = 14, extra = '') => `<text x="${rounded(x)}" y="${rounded(y)}" font-size="${size}" ${extra}>${esc(value)}</text>`;
   const rect = (x, y, w, h, extra = '') => `<rect x="${rounded(x)}" y="${rounded(y)}" width="${rounded(Math.max(0, w))}" height="${rounded(Math.max(0, h))}" ${extra}/>`;
   const line = (x1, y1, x2, y2, extra = '') => `<line x1="${rounded(x1)}" y1="${rounded(y1)}" x2="${rounded(x2)}" y2="${rounded(y2)}" ${extra}/>`;
-  const parts = [];
-  const defs = [];
+  const parts = [], defs = [];
   const paragraph = (x, y, value, size = 14, extra = '', lineHeight = Math.ceil(size * 1.5)) => {
     const lines = wrap(value, W - x - 34, size, extra.includes('font-weight="700"'));
     lines.forEach((value, i) => parts.push(text(x, y + i * lineHeight, value, size, extra)));
     return lines.length * lineHeight;
   };
   let reducedDetail = false;
-  parts.push(text(34, 32, 'LED WALL  /  PANEL LAYOUT', 14, 'font-weight="700" letter-spacing="1.8" fill="#276b68"'));
+  parts.push(text(34, 32, 'LED WALL  /  JOINED ASSEMBLY', 14, 'font-weight="700" letter-spacing="1.5" fill="#276b68"'));
   titleLines.forEach((label, i) => parts.push(text(34, 65 + i * 29, label, 26, 'font-weight="700"')));
-  subtitleLines.forEach((label, i) => parts.push(text(34, 92 + titleExtra + i * 22, label, 15, `fill="${MUTED}"`)));
+  subtitleLines.forEach((label, i) => parts.push(text(34, 94 + titleExtra + i * 25, label, 19, 'font-weight="700"')));
   parts.push(text(W - 34, 32, date.toISOString().slice(0, 10) + ' UTC', 12, `text-anchor="end" fill="${MUTED}"`));
-
-  // A white target base keeps frame/active gaps obvious even on a colored UI.
-  parts.push(rect(X(0), Y(wall.height_mm), S(wall.width_mm), S(wall.height_mm), 'fill="#f8fafc"'));
+  parts.push(rect(X(0), Y(wall.height_mm), S(wall.width_mm), S(wall.height_mm), 'fill="#f3f5f7"'));
   zones.forEach((z, i) => {
     const c = colors.get(z.panel.id);
     const fw = S(z.panel.frame_width_mm), fh = S(z.panel.frame_height_mm);
@@ -214,7 +222,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
             if (aw < fw - 0.2 || ah < fh - 0.2) {
               parts.push(rect(cx + (fw - aw) / 2, cy + (fh - ah) / 2, aw, ah, `fill="${c.active}" stroke="${c.line}" stroke-width="0.45"`));
             }
-            if (fw >= 80 && fh >= 52 && z.count <= 180) {
+            if (report && fw >= 80 && fh >= 52 && z.count <= 180) {
               parts.push(text(cx + fw / 2, cy + fh / 2 - 3, shorten(z.panel.name, fw - 16, 10), 10, `text-anchor="middle" fill="${INK}"`));
               parts.push(text(cx + fw / 2, cy + fh / 2 + 12, orientation(z), 10, `text-anchor="middle" fill="${c.line}"`));
             }
@@ -242,96 +250,87 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
       parts.push(text(badgeX + 11.5, badgeY + 16, String.fromCharCode(65 + i), 14, `text-anchor="middle" font-weight="700" fill="${c.line}"`));
     }
   });
-  // The bounding rectangle belongs to the complete packed assembly; stepped
-  // blocks need not occupy every point inside these bounds.
   if (group.hasCabinets) {
-    const overflow = Object.values(group.gaps).some((value) => value < 0);
-    parts.push(rect(X(group.x), Y(group.y + group.height), S(group.width), S(group.height), `data-group="assembly" data-group-x-mm="${group.x}" data-group-y-mm="${group.y}" fill="none" stroke="${overflow ? '#a62439' : '#67528b'}" stroke-width="1.7" stroke-dasharray="6 3"`));
+    const overflow = Object.values(group.gaps).some(value => value < 0);
+    parts.push(rect(X(group.x), Y(group.y + group.height), S(group.width), S(group.height), `data-group="assembly" data-group-x-mm="${group.x}" data-group-y-mm="${group.y}" fill="none" stroke="${overflow ? '#a62439' : '#67528b'}" stroke-width="2.4" stroke-dasharray="7 4"`));
   } else {
     parts.push(text(X(wall.width_mm / 2), Y(wall.height_mm / 2), 'No cabinets installed', 16, `text-anchor="middle" fill="${MUTED}"`));
   }
-  // The full wall is the only fixed placement boundary. Sizing split information
-  // stays in the text so it cannot be mistaken for the physical cabinet seam.
-  parts.push(rect(X(0), Y(wall.height_mm), S(wall.width_mm), S(wall.height_mm), 'fill="none" stroke="#182b3a" stroke-width="2.6"'));
-  // Dimension brackets are tied to the target, not to an overflowing footprint.
-  const dimY = plot.y + plot.h + 27;
-  parts.push(line(X(0), dimY, X(wall.width_mm), dimY, 'stroke="#4c6070" stroke-width="1"'));
-  parts.push(line(X(0), dimY - 6, X(0), dimY + 6, 'stroke="#4c6070"'));
-  parts.push(line(X(wall.width_mm), dimY - 6, X(wall.width_mm), dimY + 6, 'stroke="#4c6070"'));
-  parts.push(text((X(0) + X(wall.width_mm)) / 2, dimY + 21, `${f(wall.width_mm)} mm target`, 13, `text-anchor="middle" fill="${MUTED}"`));
-  const dimX = plot.x - 23;
-  parts.push(line(dimX, Y(0), dimX, Y(wall.height_mm), 'stroke="#4c6070" stroke-width="1"'));
-  parts.push(line(dimX - 6, Y(0), dimX + 6, Y(0), 'stroke="#4c6070"'));
-  parts.push(line(dimX - 6, Y(wall.height_mm), dimX + 6, Y(wall.height_mm), 'stroke="#4c6070"'));
-  const midY = (Y(0) + Y(wall.height_mm)) / 2;
-  parts.push(`<text x="${dimX - 13}" y="${midY}" transform="rotate(-90 ${dimX - 13} ${midY})" font-size="13" fill="${MUTED}" text-anchor="middle">${esc(f(wall.height_mm))} mm target</text>`);
+  parts.push(rect(X(0), Y(wall.height_mm), S(wall.width_mm), S(wall.height_mm), 'data-wall="target" fill="none" stroke="#182b3a" stroke-width="4"'));
 
-  let y = 666 + headerExtra;
-  y += paragraph(34, y, splitDescription(result), 14, 'font-weight="700"') + 3;
-  y += paragraph(34, y, packingDescription(result), 12, `fill="${MUTED}"`) + 5;
-  y += paragraph(34, y, compositionLine(result), 13, 'font-weight="700"');
-  y += paragraph(34, y, `Assembly alignment: ${alignmentName(group)} · Frame bounds ${f(group.width)} × ${f(group.height)} mm · Origin (${f(group.x)}, ${f(group.y)}) mm`, 14, 'font-weight="700"');
-  y += paragraph(34, y, `Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`, 14, 'font-weight="700"');
-  y += paragraph(34, y, 'Dark outline = full wall · Dashed outline = complete assembly bounds (red for overflow) · Gaps measure wall to assembly bounds.', 12, `fill="${MUTED}"`) + 5;
-  if (result.mode === 'two_zones') y += paragraph(34, y, 'Sizing split determines counts only; the physical seam moves with the assembly. Empty blocks reserve no space.', 12, `fill="${MUTED}"`);
-  y += paragraph(34, y, `Cabinet edges show physical frames; inset fill shows centered active area. Scale: ${f(100 / scale)} mm per 100 drawing units.`, 12, `fill="${MUTED}"`);
-  if (reducedDetail) {
-    y += 7;
-    y += paragraph(34, y, 'Dense grid: labels/detail reduced (maximum 1,200 individual cabinets). Coarse lines may be illustrative; counts are unchanged.', 12, `fill="${MUTED}"`);
+  // Brackets connect the actual wall and complete-group edge coordinates. A
+  // zero span still has visible ticks and a leader to its explicit 0 mm label.
+  const overlapTop = Math.max(Y(wall.height_mm), Y(group.y + group.height));
+  const overlapBottom = Math.min(Y(0), Y(group.y));
+  const rowY = (overlapTop + overlapBottom) / 2;
+  const overlapLeft = Math.max(X(0), X(group.x)), overlapRight = Math.min(X(wall.width_mm), X(group.x + group.width));
+  const topX = overlapLeft + (overlapRight - overlapLeft) * 0.36;
+  const bottomX = overlapLeft + (overlapRight - overlapLeft) * 0.64;
+  labels.left.x = 10; labels.left.y = plot.y + 22;
+  labels.right.x = W - labels.right.width - 10; labels.right.y = plot.y + plot.h - labels.right.height - 22;
+  labels.top.x = 350; labels.top.y = 118 + headerExtra;
+  labels.bottom.x = 470; labels.bottom.y = plot.y + plot.h + 30;
+  const segments = {
+    left: [X(0),rowY,X(group.x),rowY], right: [X(group.x + group.width),rowY,X(wall.width_mm),rowY],
+    top: [topX,Y(wall.height_mm),topX,Y(group.y + group.height)], bottom: [bottomX,Y(group.y),bottomX,Y(0)],
+  };
+  for (const edge of ['left','right','top','bottom']) {
+    const label = labels[edge], [x1,y1,x2,y2] = segments[edge];
+    const color = label.value < 0 ? '#a62439' : '#315f69';
+    const midX = (x1+x2)/2, midY = (y1+y2)/2;
+    parts.push(line(x1,y1,x2,y2,`stroke="#fff" stroke-width="6"`));
+    parts.push(line(x1,y1,x2,y2,`data-gap-edge="${edge}" data-gap-mm="${label.value}" stroke="${color}" stroke-width="2"`));
+    for (const [x,y] of [[x1,y1],[x2,y2]]) {
+      parts.push(edge === 'left' || edge === 'right' ? line(x,y-8,x,y+8,`stroke="${color}" stroke-width="2"`) : line(x-8,y,x+8,y,`stroke="${color}" stroke-width="2"`));
+    }
+    const boxCX = label.x + label.width/2, boxCY = label.y + label.height/2;
+    const endX = edge === 'left' ? label.x+label.width : edge === 'right' ? label.x : boxCX;
+    const endY = edge === 'top' ? label.y+label.height : edge === 'bottom' ? label.y : boxCY;
+    parts.push(line(midX,midY,endX,endY,`data-gap-leader="${edge}" stroke="${color}" stroke-width="1.4" stroke-dasharray="3 3"`));
+    parts.push(rect(label.x,label.y,label.width,label.height,`data-gap-box="${edge}" rx="8" fill="#fff" stroke="${color}" stroke-width="1.2"`));
+    let numberY = label.y + 73;
+    const spans = [`<tspan x="${boxCX}" y="${label.y+29}" font-size="25">${edge.toUpperCase()} </tspan>`,`<tspan x="${boxCX}" y="${label.y+54}" font-size="22">${label.value < 0 ? 'overflow' : 'gap'} </tspan>`];
+    label.numberLines.forEach(number => { numberY += label.numberSize; spans.push(`<tspan x="${boxCX}" y="${numberY}" font-size="${label.numberSize}">${esc(number)}</tspan>`); numberY += 7; });
+    parts.push(`<text data-gap-label="${edge}" text-anchor="middle" font-weight="700" fill="${color}">${spans.join('')}</text>`);
   }
-  y += 16;
-  zones.forEach((z, i) => {
-    const active = activeExtents(z);
-    const c = colors.get(z.panel.id);
-    parts.push(rect(34, y - 12, 15, 15, `rx="2" fill="${c.fill}" stroke="${c.line}" stroke-width="1.5"`));
-    y += paragraph(60, y, `${String.fromCharCode(65 + i)} · ${z.label} — ${z.panel.name} · ${orientation(z)}`, 15, 'font-weight="700"', 22);
-    y += paragraph(60, y, `${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets   |   ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px   |   Footprint ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`, 13);
-    y += paragraph(60, y, `Packed frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `Zone power: ${powerLine(z.power)}`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `Sizing allocation ${f(z.width)} × ${f(z.height)} mm · Frame area / allocation ${f(z.utilization * 100)}%`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `Frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm   ·   Active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `LED active extent aspect ${ratio(active.width, active.height)}   ·   LED pixel aspect ${ratio(z.resolutionW, z.resolutionH)}`, 12, `fill="${MUTED}"`) + 12;
-  });
-  y += paragraph(34, y, `Whole wall power: ${powerLine(result.power)}`, 13, 'font-weight="700"') + 12;
+
+  let y = Math.max(plot.y+plot.h+24, labels.bottom.y+labels.bottom.height+30);
+  y += paragraph(34,y,`LED GROUP · Width ${f(group.width)} mm · Height ${f(group.height)} mm · ${f(result.totalCount,0)} cabinets`,24,'font-weight="700"',32);
+  y += paragraph(34,y,`Assembly alignment: ${alignmentName(group)} · ${compositionLine(result)}`,16,'font-weight="700"',24);
+  y += paragraph(34,y,'Solid dark outline = WALL · Dashed outline = complete LED group · A + B move together',15,`fill="${MUTED}"`,22);
+  zones.forEach((z,i) => { y += paragraph(34,y,`${String.fromCharCode(65+i)} · ${f(z.nx,0)} columns × ${f(z.ny,0)} rows · ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`,16,`fill="${colors.get(z.panel.id).line}"`,24); });
+  if (reducedDetail) y += paragraph(34,y,'Dense grid: illustrative detail; cabinet counts are unchanged.',13,`fill="${MUTED}"`,20);
   if (report) {
-    parts.push(line(34, y - 9, W - 34, y - 9, 'stroke="#d4dde5"'));
-    const canvasLine = result.canvas?.combined
-      ? `Combined canvas ${f(result.canvas.width, 0)} × ${f(result.canvas.height, 0)} px. ${result.canvas.reason || ''}`
-      : `Processor mapping / separate canvases: ${result.canvas?.reason || 'Use per-zone resolutions.'}`;
-    y += paragraph(34, y + 12, canvasLine, 14, 'font-weight="700"', 22);
-    y += 8;
-    y += paragraph(34, y + 12, `Target aspect ${ratio(wall.width_mm, wall.height_mm)} · Installed frame area / wall ${f(result.utilization * 100)}%`, 13, `fill="${MUTED}"`) + 10;
-    y += paragraph(34, y + 12, `Counts by SKU: ${(result.counts || []).map((c) => `${c.name} × ${f(c.count, 0)}`).join('   |   ')}`, 13, '', 21);
-    y += 14;
-    for (const c of result.counts || []) {
-      y += paragraph(34, y, `SKU power · ${c.name} (${f(c.count, 0)} cabinets): ${powerLine(c.power)}`, 13) + 5;
-    }
-    y += 10;
+    y += 22;
+    parts.push(line(34,y-12,W-34,y-12,'stroke="#d4dde5"'));
+    y += paragraph(34,y,splitDescription(result),14,'font-weight="700"')+3;
+    y += paragraph(34,y,packingDescription(result),13,`fill="${MUTED}"`)+7;
+    y += paragraph(34,y,`Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`,14,'font-weight="700"')+10;
+    zones.forEach((z,i) => {
+      const active = activeExtents(z), c = colors.get(z.panel.id);
+      parts.push(rect(34,y-12,15,15,`rx="2" fill="${c.fill}" stroke="${c.line}" stroke-width="1.5"`));
+      y += paragraph(60,y,`${String.fromCharCode(65+i)} · ${z.label} — ${z.panel.name} · ${orientation(z)}`,15,'font-weight="700"',22);
+      y += paragraph(60,y,`${f(z.nx,0)} × ${f(z.ny,0)} = ${f(z.count,0)} cabinets · ${f(z.resolutionW,0)} × ${f(z.resolutionH,0)} px · Footprint ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`,13);
+      y += paragraph(60,y,`Packed frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`,12,`fill="${MUTED}"`);
+      if (result.sizingMode !== 'manual') y += paragraph(60,y,`Sizing allocation ${f(z.width)} × ${f(z.height)} mm · Frame area / allocation ${f(z.utilization*100)}%`,12,`fill="${MUTED}"`);
+      y += paragraph(60,y,`Frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm · Active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm`,12,`fill="${MUTED}"`);
+      y += paragraph(60,y,`LED active extent aspect ${ratio(active.width,active.height)} · LED pixel aspect ${ratio(z.resolutionW,z.resolutionH)}`,12,`fill="${MUTED}"`);
+      y += paragraph(60,y,`Zone power: ${powerLine(z.power)}`,12,`fill="${MUTED}"`)+12;
+    });
+    y += paragraph(34,y,`Whole wall power: ${powerLine(result.power)}`,13,'font-weight="700"')+8;
+    const canvasLine = result.canvas?.combined ? `Combined canvas ${f(result.canvas.width,0)} × ${f(result.canvas.height,0)} px. ${result.canvas.reason || ''}` : `Processor mapping / separate canvases: ${result.canvas?.reason || 'Use per-zone resolutions.'}`;
+    y += paragraph(34,y,canvasLine,14,'font-weight="700"',22)+8;
+    y += paragraph(34,y,`Target aspect ${ratio(wall.width_mm,wall.height_mm)} · Installed frame area / wall ${f(result.utilization*100)}%`,13,`fill="${MUTED}"`)+8;
+    y += paragraph(34,y,`Counts by SKU: ${(result.counts || []).map(c => `${c.name} × ${f(c.count,0)}`).join(' | ')}`,13,'',21)+8;
+    for (const c of result.counts || []) y += paragraph(34,y,`SKU power · ${c.name} (${f(c.count,0)} cabinets): ${powerLine(c.power)}`,13)+8;
     const warnings = allWarnings(result);
-    if (!warnings.length) {
-      parts.push(text(34, y, 'No layout warnings.', 13, `fill="${MUTED}"`));
-      y += 25;
-    } else {
-      parts.push(text(34, y, 'LAYOUT WARNINGS', 12, 'font-weight="700" letter-spacing="1"'));
-      y += 25;
-      warnings.forEach((warning) => {
-        const warningColor = warning.level === 'red' ? '#a62439' : '#895700';
-        const lines = wrap(`${warning.level === 'red' ? 'OVERFLOW / CHECK' : 'CHECK'}: ${warning.message}`, W - 46 - 34, 13);
-        parts.push(rect(34, y - 11, 4, lines.length * 19 + 4, `fill="${warningColor}" rx="2"`));
-        for (const wline of lines) {
-          parts.push(text(46, y, wline, 13, `fill="${warningColor}"`));
-          y += 19;
-        }
-        y += 12;
-      });
-    }
-    y += paragraph(34, y + 12, 'Active extent spans the outer lit edges, including gaps between cabinets.', 11, `fill="${MUTED}"`);
-    y += paragraph(34, y + 12, 'Power totals multiply supplied per-panel wattage by installed cabinet count; missing ratings remain unknown or partial. Confirm product dimensions, ratings and processor mapping before installation.', 11, `fill="${MUTED}"`) + 20;
+    y += paragraph(34,y,warnings.length ? 'LAYOUT WARNINGS' : 'No layout warnings.',12,'font-weight="700"')+5;
+    for (const warning of warnings) y += paragraph(34,y,`${warning.level === 'red' ? 'OVERFLOW / CHECK' : 'CHECK'}: ${warning.message}`,13,`fill="${warning.level === 'red' ? '#a62439' : '#895700'}"`)+8;
+    y += paragraph(34,y,'Active extent spans the outer lit edges, including gaps between cabinets.',11,`fill="${MUTED}"`)+5;
+    y += paragraph(34,y,'Power totals multiply supplied per-panel wattage by installed cabinet count; missing ratings remain unknown or partial. Confirm product dimensions, ratings and processor mapping before installation.',11,`fill="${MUTED}"`)+20;
   }
-  const height = Math.ceil(y + 14);
-  const width = report ? 1800 : 1200;
-  const pixelHeight = Math.round(height * width / W);
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount, 0))} cabinets. ${esc(compositionLine(result))}. Assembly alignment ${esc(alignmentName(group))}. Wall edge gaps: ${esc(gapLine(group))}. All dimensions in millimeters.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
+  const height = Math.ceil(y+14), width = report ? 1800 : W, pixelHeight = Math.round(height*width/W);
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount,0))} cabinets. ${esc(compositionLine(result))}. Assembly alignment ${esc(alignmentName(group))}. Wall edge gaps: ${esc(gapLine(group))}. All dimensions in millimeters.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
 }
 
 export async function downloadPNG(result) {

@@ -1,4 +1,4 @@
-import { normalizePanel, parseLibrary, calculate, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked } from './core.js';
+import { normalizePanel, parseLibrary, calculate, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked, resolveSizingMode } from './core.js';
 import { renderDiagram, summaryText, downloadPNG } from './diagram.js';
 
 const $ = id => document.getElementById(id);
@@ -11,7 +11,7 @@ const seeds = [
   {id:'10000000-0000-4000-8000-000000000002',name:'Demo Square 300',vendor:'Fictional example',active_width_mm:300,active_height_mm:300,resolution_w:192,resolution_h:192,pixel_pitch_mm:1.5625,rotatable:true,notes:'Example only. Not a real product.'},
   {id:'10000000-0000-4000-8000-000000000003',name:'Demo Inset 500',vendor:'Fictional example',active_width_mm:480,active_height_mm:480,frame_width_mm:500,frame_height_mm:500,resolution_w:240,resolution_h:240,pixel_pitch_mm:2,rotatable:false,notes:'Fictional 10 mm centered inset on all sides.'}
 ].map(normalizePanel);
-const defaults = {wall:{name:'Main stage',width_mm:4800,height_mm:2700},mode:'single',strategy:'fit_inside',alignment:'center',compositionLocked:false,split:{direction:'vertical',offset_mm:2400},zones:[{panelId:seeds[0].id,rotated:false},{panelId:seeds[1].id,rotated:false}]};
+const defaults = {wall:{name:'A + B centered example',width_mm:8000,height_mm:3000},mode:'two_zones',strategy:'fit_inside',sizingMode:'manual',arrangement:'side_by_side',alignment:'center',compositionLocked:false,split:{direction:'vertical',offset_mm:4000},zones:[{panelId:seeds[0].id,rotated:false,columns:4,rows:4},{panelId:seeds[1].id,rotated:false,columns:6,rows:4}]};
 let panels = structuredClone(seeds), config = structuredClone(defaults), result = null, editingId = null;
 let storageAvailable = true;
 try {
@@ -23,6 +23,7 @@ try {
       config = {...defaults,...data.config,wall:{...defaults.wall,...data.config.wall},split:{...defaults.split,...data.config.split}};
       config.alignment = resolveAlignment(data.config);
       config.compositionLocked = resolveCompositionLocked(data.config);
+      config.sizingMode = resolveSizingMode(data.config);
       config.zones = [0,1].map(i => { const zone = {...defaults.zones[i],...data.config.zones?.[i]}; delete zone.alignment; return zone; });
     }
   }
@@ -46,6 +47,8 @@ function fillControls() {
   mode.checked = true;
   config.mode = mode.value;
   $('fit-strategy').value = config.strategy;
+  $('sizing-mode').value = config.sizingMode;
+  $('arrangement').value = config.arrangement;
   $('layout-alignment').value = config.alignment;
   $('split-direction').value = config.split.direction;
   $('split-offset').value = config.split.offset_mm;
@@ -53,30 +56,35 @@ function fillControls() {
 }
 
 function renderSelectors() {
-  const split = config.mode === 'two_zones';
-  $('split-controls').hidden = !split;
+  const split = config.mode === 'two_zones', manual = config.sizingMode === 'manual';
+  $('split-controls').hidden = !split || manual;
+  $('arrangement-controls').hidden = !split || !manual;
+  $('auto-fit-controls').hidden = manual;
+  $('sizing-note').textContent = manual ? 'Set each LED block independently. Changing the outer wall does not change these cabinet counts.' : 'Auto fit derives cabinet counts from wall allocations. For an LED assembly smaller than the wall, choose Set cabinet counts.';
   $('offset-label').textContent = config.split.direction === 'horizontal' ? 'Cut from bottom (mm)' : 'Cut from left (mm)';
-  const labels = split ? (config.split.direction === 'horizontal' ? ['A · Bottom zone','B · Top zone'] : ['A · Left zone','B · Right zone']) : ['A · Whole wall'];
+  const labels = manual ? (split ? ['A · Type A','B · Type B'] : ['A · Type A']) : split ? (config.split.direction === 'horizontal' ? ['A · Bottom zone','B · Top zone'] : ['A · Left zone','B · Right zone']) : ['A · Whole wall'];
   $('zone-selectors').innerHTML = labels.map((label,i) => {
     const zone = config.zones[i];
     const panel = panels.find(p=>p.id===zone.panelId);
     const colorIndex = config.zones.slice(0,i).some(z=>z.panelId===zone.panelId) ? 0 : i;
-    return `<div class="zone-picker"><div class="zone-heading"><i class="swatch ${colorIndex ? 'swatch-b' : ''}"></i>${label}</div><div class="zone-fields"><label>Panel model<select data-zone="${i}" data-field="panelId" aria-label="${label} panel"><option value="" ${!panel ? 'selected' : ''} disabled>Select a panel</option>${panels.map(p=>`<option value="${esc(p.id)}" ${p.id===zone.panelId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>Orientation<select data-zone="${i}" data-field="rotated" aria-label="${label} orientation"><option value="false" ${!zone.rotated?'selected':''}>0° · Native</option><option value="true" ${zone.rotated?'selected':''} ${panel?.rotatable?'':'disabled'}>90° · Rotate</option></select></label></div>${panel ? `<p class="panel-facts">Frame ${num(panel.frame_width_mm)} × ${num(panel.frame_height_mm)} mm · ${num(panel.resolution_w)} × ${num(panel.resolution_h)} px${panel.rotatable?'':' · fixed orientation'}<br>Power per cabinet: typical ${panel.typical_power_w === null ? 'unknown' : num(panel.typical_power_w)+' W'} · max ${panel.max_power_w === null ? 'unknown' : num(panel.max_power_w)+' W'}</p>` : '<p class="panel-facts">Add or choose a valid panel from your library.</p>'}</div>`;
+    return `<div class="zone-picker"><div class="zone-heading"><i class="swatch ${colorIndex ? 'swatch-b' : ''}"></i>${label}</div><div class="zone-fields"><label>Panel model<select data-zone="${i}" data-field="panelId" aria-label="${label} panel"><option value="" ${!panel ? 'selected' : ''} disabled>Select a panel</option>${panels.map(p=>`<option value="${esc(p.id)}" ${p.id===zone.panelId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>Orientation<select data-zone="${i}" data-field="rotated" aria-label="${label} orientation"><option value="false" ${!zone.rotated?'selected':''}>0° · Native</option><option value="true" ${zone.rotated?'selected':''} ${panel?.rotatable?'':'disabled'}>90° · Rotate</option></select></label></div>${manual ? `<div class="pair manual-counts"><label>Columns<input data-zone="${i}" data-field="columns" aria-label="${label} columns" type="number" step="1" min="1" inputmode="numeric" value="${esc(zone.columns)}"></label><label>Rows<input data-zone="${i}" data-field="rows" aria-label="${label} rows" type="number" step="1" min="1" inputmode="numeric" value="${esc(zone.rows)}"></label></div><p class="block-size helper" data-block-zone="${i}"></p>` : ''}${panel ? `<p class="panel-facts">Frame ${num(panel.frame_width_mm)} × ${num(panel.frame_height_mm)} mm · ${num(panel.resolution_w)} × ${num(panel.resolution_h)} px${panel.rotatable?'':' · fixed orientation'}<br><button type="button" class="panel-dimensions-button" data-edit-panel="${panel.id}">Edit cabinet dimensions ↗</button><br>Power per cabinet: typical ${panel.typical_power_w === null ? 'unknown' : num(panel.typical_power_w)+' W'} · max ${panel.max_power_w === null ? 'unknown' : num(panel.max_power_w)+' W'}</p>` : '<p class="panel-facts">Add or choose a valid panel from your library.</p>'}</div>`;
   }).join('');
 }
 
 function renderLockState() {
   const locked = config.compositionLocked;
-  for (const id of ['wall-width','wall-height','split-direction','split-offset','fit-strategy','add-panel','import-library','import-file']) $(id).disabled = locked;
-  document.querySelectorAll('input[name="mode"], #zone-selectors select, #panel-form input, #panel-form textarea, #panel-form button').forEach(input => { input.disabled = locked; });
+  for (const id of ['wall-width','wall-height','split-direction','split-offset','fit-strategy','sizing-mode','arrangement','load-example','add-panel','import-library','import-file']) $(id).disabled = locked;
+  document.querySelectorAll('input[name="mode"], #zone-selectors select, #zone-selectors input, #panel-form input, #panel-form textarea, #panel-form button').forEach(input => { input.disabled = locked; });
   document.querySelectorAll('#library-list button[data-action="duplicate"], #library-list button[data-action="delete"]').forEach(button => { button.disabled = locked; });
   $('composition-lock').textContent = locked ? 'Unlock composition' : 'Lock composition';
   $('composition-lock').setAttribute('aria-pressed',String(locked));
   $('composition-lock').disabled = !locked && (!result || !result.totalCount);
   $('composition-status').textContent = locked
-    ? 'Locked on this device. Wall size, cabinet choices, sizing split, fit and panel library are held. Choose any position to move the complete group; unlock to edit its composition.'
-    : 'Set the wall size, A / B cabinets and fit first. Lock a valid composition to hold its size and arrangement, then move the whole group. The lock is saved with this session.';
+    ? 'Locked on this device. Wall size, A/B counts, cabinet choices, arrangement, fit and panel library are held. Choose any position to move the complete group; unlock to edit its composition.'
+    : 'Set the outer wall, A / B columns and rows, and how the blocks join. Lock a valid composition to hold its size and arrangement, then move the whole group. The lock is saved with this session.';
   $('library-lock-status').hidden = !locked;
+  $('unlock-from-example').hidden = !locked;
+  document.querySelectorAll('[data-edit-panel]').forEach(button=>{button.textContent=locked?'View cabinet dimensions ↗':'Edit cabinet dimensions ↗';});
   document.querySelectorAll('[data-anchor]').forEach(button => { button.setAttribute('aria-pressed',String(button.dataset.anchor === config.alignment)); });
 }
 
@@ -92,8 +100,8 @@ function row(label,value) {return `<div class="result-row"><span>${label}</span>
 function renderResults(r) {
   const canvas = r.canvas.combined && r.canvas.width > 0 && r.canvas.height > 0 ? `${num(r.canvas.width)} × ${num(r.canvas.height)}` : (r.totalCount ? 'Per zone' : 'No pixels');
   $('results').innerHTML = `<div class="metric-grid"><div class="metric"><div class="label">Total cabinets</div><div class="value">${num(r.totalCount)}</div><div class="hint">${r.counts.map(p=>`${num(p.count)} ${esc(p.name)}`).join(' + ') || 'No cabinets fit'}</div></div><div class="metric"><div class="label">${r.mode==='single'?'LED resolution':'Pixel canvas'}</div><div class="value" style="font-size:${canvas.length > 15?'18':'22'}px">${canvas}</div><div class="hint">${r.canvas.combined?'pixels · aligned canvas':'See zone resolutions below'}</div></div><div class="metric"><div class="label">Utilization</div><div class="value">${num(r.utilization*100)}<small>%</small></div><div class="hint">Cabinet footprint / target area</div></div></div>
-  <div class="card result-card group-result"><h3>Whole-layout placement</h3><div class="result-table">${row('Composition',r.compositionLocked?'Locked':'Unlocked')}${row('Position',alignmentName(r.group.alignment))}${row('Group footprint',`${num(r.group.width)} × ${num(r.group.height)} mm`)}${row('Left gap',gapText(r.group.gaps.left))}${row('Right gap',gapText(r.group.gaps.right))}${row('Top gap',gapText(r.group.gaps.top))}${row('Bottom gap',gapText(r.group.gaps.bottom))}</div><p class="helper">${r.mode==='single'?'The cabinet grid moves as one group.':r.split.direction==='vertical'?'A and B join edge to edge, left to right, with their bottom edges aligned.':'A and B join edge to edge, bottom to top, with their left edges aligned.'} All four gaps measure the assembled outer frame bounds to the wall.${!r.totalCount?' No cabinets installed; clearances are illustrative.':''}</p></div>
-  <div class="card result-card">${r.zones.map((z,i)=>`<div class="zone-result"><h3><i class="swatch ${i && z.panel.id!==r.zones[0].panel.id?'swatch-b':''}"></i>${esc(z.label)} <span class="optional">${esc(z.panel.name)} · ${z.rotated?'90° rotated':'0° native'}</span></h3><div class="result-table">${row('Cabinet grid',`${num(z.nx)} × ${num(z.ny)} · ${num(z.count)} cabinets`)}${row('Sizing allocation',`${num(z.width)} × ${num(z.height)} mm`)}${row('Actual footprint',`${num(z.actualWidth)} × ${num(z.actualHeight)} mm`)}${row('Resolution',`${num(z.resolutionW)} × ${num(z.resolutionH)} px`)}${row('Frame origin (wall X / Y)',`${num(z.actualX)} / ${num(z.actualY)} mm`)}${row('Typical / average power',powerText(z.power.typical))}${row('Maximum power',powerText(z.power.maximum))}${row('Active aggregate',`${num(z.activeWidth)} × ${num(z.activeHeight)} mm`)}${row('LED aspect ratio',ratio(z.activeWidth,z.activeHeight))}${row('Allocation utilization',`${num(z.utilization*100)}%`)}${row('Derived pitch X / Y',`${num(z.panel.active_width_mm/z.panel.resolution_w)} / ${num(z.panel.active_height_mm/z.panel.resolution_h)} mm`)}</div></div>`).join('')}
+  <div class="card result-card group-result"><h3>Whole-layout placement</h3><div class="result-table">${row('Composition',r.compositionLocked?'Locked':'Unlocked')}${row('Position',alignmentName(r.group.alignment))}${row('LED assembly size',`${num(r.group.width)} × ${num(r.group.height)} mm`)}${row('Left gap',gapText(r.group.gaps.left))}${row('Right gap',gapText(r.group.gaps.right))}${row('Top gap',gapText(r.group.gaps.top))}${row('Bottom gap',gapText(r.group.gaps.bottom))}</div><p class="helper">${r.mode==='single'?'The cabinet grid moves as one group.':r.arrangement==='side_by_side'?'A and B join edge to edge, left to right, with their bottom edges aligned.':'A and B join edge to edge, bottom to top, with their left edges aligned.'} All four distances measure the assembled LED frame bounds to the outer wall.${r.sizingMode==='auto_fit' && r.group.deltaW===0 && r.group.deltaH===0 ? ' This LED fills the wall, so centering has no empty gap. Choose Set cabinet counts to build a smaller LED assembly.' : ''}${!r.totalCount?' No cabinets installed; clearances are illustrative.':''}</p></div>
+  <div class="card result-card">${r.zones.map((z,i)=>`<div class="zone-result"><h3><i class="swatch ${i && z.panel.id!==r.zones[0].panel.id?'swatch-b':''}"></i>${esc(z.label)} <span class="optional">${esc(z.panel.name)} · ${z.rotated?'90° rotated':'0° native'}</span></h3><div class="result-table">${row('Cabinet grid',`${num(z.nx)} × ${num(z.ny)} · ${num(z.count)} cabinets`)}${r.sizingMode==='auto_fit'?row('Sizing allocation',`${num(z.width)} × ${num(z.height)} mm`):''}${row('Actual footprint',`${num(z.actualWidth)} × ${num(z.actualHeight)} mm`)}${row('Resolution',`${num(z.resolutionW)} × ${num(z.resolutionH)} px`)}${row('Frame origin (wall X / Y)',`${num(z.actualX)} / ${num(z.actualY)} mm`)}${row('Typical / average power',powerText(z.power.typical))}${row('Maximum power',powerText(z.power.maximum))}${row('Active aggregate',`${num(z.activeWidth)} × ${num(z.activeHeight)} mm`)}${row('LED aspect ratio',ratio(z.activeWidth,z.activeHeight))}${r.sizingMode==='auto_fit'?row('Allocation utilization',`${num(z.utilization*100)}%`):''}${row('Derived pitch X / Y',`${num(z.panel.active_width_mm/z.panel.resolution_w)} / ${num(z.panel.active_height_mm/z.panel.resolution_h)} mm`)}</div></div>`).join('')}
   <div class="result-table" style="margin-top:16px">${row('Target wall ratio',ratio(r.wall.width_mm,r.wall.height_mm))}</div>
   <div class="mapping ${r.canvas.combined?'':'separate'}"><strong>${r.canvas.combined?'Aligned pixel canvas':'Processor mapping / two canvases'}</strong>${esc(r.canvas.reason)}</div>
   </div><div class="card result-card power-card"><h3>Whole-wall power</h3><div class="result-table">${row('Typical / average',powerText(r.power.typical))}${row('Maximum',powerText(r.power.maximum))}</div><p class="helper">Installed cabinet count × your per-cabinet ratings. Unknown ratings are excluded from partial totals.</p><details class="sku-power"><summary>Power by panel model (SKU)</summary>${r.counts.map(c=>`<div class="sku-power-item"><h4>${esc(c.name)} <span class="optional">${num(c.count)} cabinets</span></h4><div class="result-table">${row('Typical / average',powerText(c.power.typical))}${row('Maximum',powerText(c.power.maximum))}</div></div>`).join('')}</details></div>${r.warnings.length?`<div class="warnings">${r.warnings.map(w=>`<div class="warning ${w.level==='red'?'red':''}"><strong aria-hidden="true">${w.level==='red'?'!':'△'}</strong><span>${esc(w.message)}</span></div>`).join('')}</div>`:''}`;
@@ -121,6 +129,8 @@ function update() {
     $('export-png').disabled = true;
     $('copy-summary').disabled = true;
   }
+  $('assembly-size').textContent = result ? `LED assembly ${num(result.group.width)} × ${num(result.group.height)} mm` : 'Set the LED cabinet counts';
+  document.querySelectorAll('[data-block-zone]').forEach(node=>{const z=result?.zones[Number(node.dataset.blockZone)];node.textContent=z?`LED block: ${num(z.actualWidth)} × ${num(z.actualHeight)} mm · ${num(z.count)} cabinets`:'Enter positive whole columns and rows.';});
   renderLockState();
   persist();
 }
@@ -129,6 +139,10 @@ for (const [id,key] of [['wall-name','name'],['wall-width','width_mm'],['wall-he
   $(id).addEventListener('input',e=>{if(key!=='name' && compositionEditBlocked())return;config.wall[key]=key==='name'?e.target.value:e.target.value === '' ? '' : Number(e.target.value); update();});
 }
 document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',e=>{if(compositionEditBlocked())return;config.mode=e.target.value;renderSelectors();update();}));
+$('sizing-mode').addEventListener('change',e=>{if(compositionEditBlocked())return;config.sizingMode=e.target.value;renderSelectors();update();});
+$('arrangement').addEventListener('change',e=>{if(compositionEditBlocked())return;config.arrangement=e.target.value;renderSelectors();update();});
+$('unlock-from-example').addEventListener('click',()=>{config.compositionLocked=false;update();});
+$('load-example').addEventListener('click',()=>{if(compositionEditBlocked())return;const exampleIds=seeds.slice(0,2).map(seed=>{let p=panels.find(p=>['active_width_mm','active_height_mm','frame_width_mm','frame_height_mm','resolution_w','resolution_h'].every(key=>p[key]===seed[key]));if(!p){p=normalizePanel({...seed,id:crypto.randomUUID()});panels.push(p);}return p.id;});config=structuredClone(defaults);config.zones.forEach((zone,i)=>zone.panelId=exampleIds[i]);fillControls();update();$('action-status').textContent='Loaded the 8,000 × 3,000 mm A + B example. Your panel library is retained.';});
 $('layout-alignment').addEventListener('change',e=>{config.alignment=e.target.value;update();});
 document.querySelectorAll('[data-anchor]').forEach(button=>button.addEventListener('click',()=>{config.alignment=button.dataset.anchor;$('layout-alignment').value=config.alignment;update();}));
 $('composition-lock').addEventListener('click',()=>{if(!config.compositionLocked && (!result || !result.totalCount))return;config.compositionLocked=!config.compositionLocked;update();});
@@ -137,11 +151,15 @@ $('split-direction').addEventListener('change',e=>{if(compositionEditBlocked())r
 $('split-offset').addEventListener('input',e=>{if(compositionEditBlocked())return;config.split.offset_mm=e.target.value === '' ? '' : Number(e.target.value);update();});
 $('zone-selectors').addEventListener('change',e=>{
   const {zone,field} = e.target.dataset;
-  if (zone===undefined || compositionEditBlocked()) return;
+  if (zone===undefined || ['columns','rows'].includes(field) || compositionEditBlocked()) return;
   config.zones[Number(zone)][field] = field==='rotated' ? e.target.value==='true' : e.target.value;
   if(field==='panelId' && !panels.find(p=>p.id===e.target.value)?.rotatable) config.zones[Number(zone)].rotated=false;
   renderSelectors(); update();
 });
+
+$('zone-selectors').addEventListener('input',e=>{const {zone,field}=e.target.dataset;if(zone===undefined || !['columns','rows'].includes(field) || compositionEditBlocked())return;config.zones[Number(zone)][field]=e.target.value===''?'':Number(e.target.value);update();});
+
+$('zone-selectors').addEventListener('click',e=>{const button=e.target.closest('[data-edit-panel]');if(!button)return;editPanel(button.dataset.editPanel);$('library-dialog').showModal();});
 
 const panelForm = $('panel-form');
 const numericFields = ['active_width_mm','active_height_mm','frame_width_mm','frame_height_mm','resolution_w','resolution_h','pixel_pitch_mm','typical_power_w','max_power_w'];
@@ -235,3 +253,7 @@ $('close-copy').addEventListener('click',()=>$('copy-dialog').close());
 $('select-summary').addEventListener('click',()=>{$('copy-text').focus();$('copy-text').select();});
 fillControls();update();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{$('action-status').textContent='Offline cache unavailable. Keep this page open, or use an HTTPS / localhost address for offline support.';});
+
+const worksheetTabs=[['wall-layout-tab','wall-worksheet'],['pixel-converter-tab','conversion-worksheet']];
+function selectWorksheet(index){worksheetTabs.forEach(([tabId,panelId],i)=>{$(tabId).setAttribute('aria-selected',String(i===index));$(tabId).tabIndex=i===index?0:-1;$(panelId).hidden=i!==index;});}
+worksheetTabs.forEach(([tabId],index)=>{$(tabId).addEventListener('click',()=>selectWorksheet(index));$(tabId).addEventListener('keydown',e=>{let next;if(e.key==='ArrowRight'||e.key==='ArrowLeft')next=1-index;else if(e.key==='Home')next=0;else if(e.key==='End')next=1;else return;e.preventDefault();selectWorksheet(next);$(worksheetTabs[next][0]).focus();});});

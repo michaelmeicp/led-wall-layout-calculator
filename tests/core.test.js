@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePanel, parseLibrary, orientPanel, calculate, ALIGNMENTS, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked } from '../core.js';
+import { normalizePanel, parseLibrary, orientPanel, calculate, ALIGNMENTS, alignmentName, gapText, powerText, resolveAlignment, resolveCompositionLocked, resolveSizingMode } from '../core.js';
 
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const panel = (overrides = {}) => ({ id: uuid(1), name: 'FAKE 600', active_width_mm: 600, active_height_mm: 337.5, resolution_w: 192, resolution_h: 108, rotatable: true, ...overrides });
 const config = (overrides = {}) => ({ wall: { width_mm: 2400, height_mm: 1350 }, mode: 'single', strategy: 'fit_inside', zones: [{ panelId: uuid(1), rotated: false }], ...overrides });
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+const manualConfig = (overrides = {}) => config({ wall: { width_mm: 8000, height_mm: 3000 }, mode: 'two_zones', sizingMode: 'manual', arrangement: 'side_by_side', alignment: 'center', zones: [{ panelId: uuid(1), columns: 4, rows: 4 }, { panelId: uuid(2), columns: 6, rows: 4 }], ...overrides });
+const squarePanel = (overrides = {}) => panel({ id: uuid(2), name: 'FAKE 300', active_width_mm: 300, active_height_mm: 300, resolution_w: 96, resolution_h: 96, ...overrides });
 
 test('decimal 600 × 337.5 frame tiles with integer resolution', () => {
   const result = calculate(config(), [panel()]);
@@ -254,8 +256,8 @@ test('all nine visual-order alignments move one complete assembly using cabinet 
     assert.ok(!Object.hasOwn(r.zones[0], 'gaps'));
   }
   assert.equal(alignmentName('top_right'), 'Top right');
-  assert.equal(gapText(25), '25 mm gap');
-  assert.equal(gapText(-25), '25 mm overflow');
+  assert.equal(gapText(25), 'gap 25 mm');
+  assert.equal(gapText(-25), 'overflow 25 mm');
 });
 
 test('global alignment migration validates one choice and ignores obsolete second-zone choices', () => {
@@ -408,6 +410,113 @@ test('composition lock validates a persisted edit-guard flag without changing ca
     assert.deepEqual(moved.power, locked.power);
     assert.deepEqual(moved.zones.map(z => [z.nx, z.ny]), locked.zones.map(z => [z.nx, z.ny]));
   }
+});
+
+test('manual A 4 × 4 and B 6 × 4 join on an 8000 × 3000 wall with visible external gaps', () => {
+  const r = calculate(manualConfig(), [panel(), squarePanel()]);
+  assert.equal(r.sizingMode, 'manual');
+  assert.equal(r.arrangement, 'side_by_side');
+  assert.equal(r.split, null);
+  assert.deepEqual(r.zones.map(z => [z.label, z.nx, z.ny, z.count, z.actualWidth, z.actualHeight]), [['Type A', 4, 4, 16, 2400, 1350], ['Type B', 6, 4, 24, 1800, 1200]]);
+  assert.equal(r.totalCount, 40);
+  assert.deepEqual([r.group.width, r.group.height, r.group.x, r.group.y], [4200, 1350, 1900, 825]);
+  assert.deepEqual(r.group.gaps, { left: 1900, right: 1900, top: 825, bottom: 825 });
+  assert.deepEqual(r.zones.map(z => [z.actualX, z.actualY]), [[1900, 825], [4300, 825]]);
+  close(r.utilization, .225);
+  assert.ok(!r.warnings.some(w => /sizing allocation/.test(w.message)));
+  assert.equal(gapText(r.group.gaps.left), 'gap 1,900 mm');
+  assert.equal(gapText(0), 'gap 0 mm');
+});
+
+test('manual quantities and power remain independent of wall edits and auto-fit strategies', () => {
+  const library = [panel({ typical_power_w: 100, max_power_w: 200 }), squarePanel({ typical_power_w: 30, max_power_w: 60 })];
+  const baseline = calculate(manualConfig(), library);
+  assert.equal(baseline.power.typical.watts, 2320);
+  assert.equal(baseline.power.maximum.watts, 4640);
+  assert.deepEqual(baseline.counts.map(entry => entry.count), [16, 24]);
+  for (const wall of [{ width_mm: 10000, height_mm: 4000 }, { width_mm: 4000, height_mm: 1000 }, { width_mm: 1, height_mm: 1 }]) for (const strategy of ['fit_inside', 'cover_wall', 'exact_only']) {
+    const r = calculate(manualConfig({ wall, strategy, compositionLocked: true }), library);
+    assert.equal(r.totalCount, 40);
+    assert.deepEqual(r.zones.map(z => [z.nx, z.ny, z.count]), baseline.zones.map(z => [z.nx, z.ny, z.count]));
+    assert.deepEqual([r.group.width, r.group.height], [4200, 1350]);
+    assert.deepEqual(r.power, baseline.power);
+    assert.deepEqual(r.counts, baseline.counts);
+    assert.ok(!r.warnings.some(w => /sizing allocation/.test(w.message)));
+    assert.equal(r.compositionLocked, true);
+  }
+});
+
+test('manual side-by-side and stacked groups show every side gap or overflow at all nine anchors', () => {
+  const locations = { top_left: [0, 1], top_center: [.5, 1], top_right: [1, 1], middle_left: [0, .5], center: [.5, .5], middle_right: [1, .5], bottom_left: [0, 0], bottom_center: [.5, 0], bottom_right: [1, 0] };
+  for (const arrangement of ['side_by_side', 'stacked']) {
+    const [width, height] = arrangement === 'side_by_side' ? [4200, 1350] : [2400, 2550];
+    const walls = [{ width_mm: width + 1000, height_mm: height + 600 }, { width_mm: width - 400, height_mm: height - 200 }, { width_mm: width - 400, height_mm: height + 600 }, { width_mm: width + 1000, height_mm: height - 200 }];
+    for (const wall of walls) for (const [alignment, [fx, fy]] of Object.entries(locations)) {
+      const r = calculate(manualConfig({ wall, arrangement, alignment }), [panel(), squarePanel()]);
+      const expectedLeft = (wall.width_mm - width) * fx || 0, expectedBottom = (wall.height_mm - height) * fy || 0;
+      assert.deepEqual([r.group.width, r.group.height, r.group.x, r.group.y], [width, height, expectedLeft, expectedBottom]);
+      assert.deepEqual(r.group.gaps, { left: expectedLeft, right: wall.width_mm - width - expectedLeft, top: wall.height_mm - height - expectedBottom, bottom: expectedBottom });
+      const [a, b] = r.zones;
+      assert.deepEqual([a.actualX, a.actualY], [expectedLeft, expectedBottom]);
+      assert.deepEqual([b.actualX, b.actualY], arrangement === 'side_by_side' ? [expectedLeft + 2400, expectedBottom] : [expectedLeft, expectedBottom + 1350]);
+      assert.equal(r.totalCount, 40);
+      assert.equal(r.group.packing, arrangement === 'side_by_side' ? 'vertical' : 'horizontal');
+      assert.equal(r.split, null);
+      for (const gap of Object.values(r.group.gaps)) assert.match(gapText(gap), gap < 0 ? /^overflow [\d,]+(?:\.\d+)? mm$/ : /^gap [\d,]+(?:\.\d+)? mm$/);
+      const overflows = wall.width_mm < width || wall.height_mm < height;
+      assert.equal(r.warnings.some(w => w.level === 'red' && /Assembly overflows/.test(w.message)), overflows);
+    }
+  }
+});
+
+test('manual rotation uses frame dimensions and leaves active pixels and physical insets intact', () => {
+  const p = panel({ active_width_mm: 580, active_height_mm: 320, frame_width_mm: 600, frame_height_mm: 337.5 });
+  const r = calculate(manualConfig({ wall: { width_mm: 4000, height_mm: 3000 }, alignment: 'top_right', zones: [{ panelId: uuid(1), columns: 3, rows: 2, rotated: true }, { panelId: uuid(2), columns: 2, rows: 1 }] }), [p, squarePanel()]);
+  const [a, b] = r.zones;
+  assert.deepEqual([a.nx, a.ny, a.count, a.actualWidth, a.actualHeight], [3, 2, 6, 1012.5, 1200]);
+  assert.deepEqual([a.activeWidth, a.activeHeight, a.resolutionW, a.resolutionH], [960, 1160, 324, 384]);
+  assert.deepEqual([r.group.width, r.group.height, r.group.x, r.group.y], [1612.5, 1200, 2387.5, 1800]);
+  assert.deepEqual([b.actualX, b.actualY], [3400, 1800]);
+  assert.match(r.canvas.reason, /actual derived pixel pitches differ|frame insets/);
+});
+
+test('manual mode validates explicit positive safe columns, rows and arrangement atomically', () => {
+  assert.equal(resolveSizingMode({}), 'auto_fit');
+  assert.equal(resolveSizingMode({ sizingMode: 'manual' }), 'manual');
+  const library = [panel(), squarePanel()];
+  for (const sizingMode of ['', null, false, 0, {}, 'fit']) assert.throws(() => calculate(manualConfig({ sizingMode }), library), /manual cabinet counts or automatic fit/);
+  for (const arrangement of ['', null, false, 0, {}, 'vertical']) assert.throws(() => calculate(manualConfig({ arrangement }), library), /side by side or stacked/);
+  for (const field of ['columns', 'rows']) for (const value of [undefined, null, '', 0, -1, .5, Infinity, NaN, true, [], {}, 'bad', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => calculate(manualConfig({ zones: [{ panelId: uuid(1), columns: 4, rows: 4, [field]: value }, { panelId: uuid(2), columns: 6, rows: 4 }] }), library), /positive|safe integer|required/);
+  }
+  const defaultArrangement = calculate(manualConfig({ arrangement: undefined, split: { direction: 'bad', offset_mm: -1 } }), library);
+  assert.equal(defaultArrangement.arrangement, 'side_by_side');
+  assert.equal(defaultArrangement.split, null, 'manual mode does not use stale auto-fit cuts');
+  assert.throws(() => calculate(manualConfig({ zones: [{ panelId: uuid(1), columns: 100000000, rows: 100000000 }, { panelId: uuid(2), columns: 6, rows: 4 }] }), library), /Cabinet count.*numerical range/);
+  const stringCounts = calculate(manualConfig({ zones: [{ panelId: uuid(1), columns: '4', rows: '4' }, { panelId: uuid(2), columns: '6', rows: '4' }] }), library);
+  assert.equal(stringCounts.totalCount, 40);
+});
+
+test('manual session roundtrip and single type work while old sessions retain automatic fit', () => {
+  const saved = JSON.parse(JSON.stringify(manualConfig({ arrangement: 'stacked', alignment: 'bottom_center', compositionLocked: true })));
+  const r = calculate(saved, [panel(), squarePanel()]);
+  assert.equal(r.sizingMode, 'manual');
+  assert.equal(r.arrangement, 'stacked');
+  assert.equal(r.totalCount, 40);
+  assert.deepEqual(r.group.gaps, { left: 2800, right: 2800, top: 450, bottom: 0 });
+  const single = calculate(config({ wall: { width_mm: 8000, height_mm: 3000 }, sizingMode: 'manual', alignment: 'center', zones: [{ panelId: uuid(1), columns: 2, rows: 3 }] }), [panel()]);
+  assert.equal(single.group.packing, 'single');
+  assert.equal(single.totalCount, 6);
+  assert.deepEqual([single.group.width, single.group.height], [1200, 1012.5]);
+  const old = calculate(config(), [panel()]);
+  assert.equal(old.sizingMode, 'auto_fit');
+  assert.equal(old.totalCount, 16);
+  assert.deepEqual(old, calculate(config({ sizingMode: 'auto_fit' }), [panel()]));
+  const horizontal = config({ mode: 'two_zones', split: { direction: 'horizontal', offset_mm: 675 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] });
+  const auto = calculate(horizontal, [panel()]);
+  assert.equal(auto.arrangement, 'stacked');
+  assert.deepEqual(auto.split, horizontal.split);
+  assert.equal(auto.totalCount, 16);
 });
 
 test('optional per-panel power validates finite nonnegative values and preserves unknown', () => {

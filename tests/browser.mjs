@@ -43,9 +43,213 @@ function assertGroupPlacement(result,value) {
   assert.equal(group.x,left);assert.equal(group.y,bottom);
   assert.deepEqual(group.gaps,{left,right:dx-left,top:dy-bottom,bottom});
 }
+const countInput=(zone,field)=>page.locator(`[data-zone="${zone}"][data-field="${field}"]`);
+const diagramReadback=()=>page.evaluate(async()=>{
+  const {calculate}=await import('./core.js');
+  const saved=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+  const result=calculate({...saved.config,zones:saved.config.zones.slice(0,saved.config.mode==='single'?1:2)},saved.panels);
+  const svg=document.querySelector('#diagram svg');
+  const rectBox=rect=>Object.fromEntries(['x','y','width','height'].map(key=>[key,Number(rect.getAttribute(key))]));
+  const view=svg.viewBox.baseVal;
+  const labels=[...svg.querySelectorAll('[data-gap-label]')].map(label=>{
+    const b=label.getBBox(),m=svg.getCTM().inverse().multiply(label.getCTM());
+    const points=[[b.x,b.y],[b.x+b.width,b.y],[b.x,b.y+b.height],[b.x+b.width,b.y+b.height]].map(([x,y])=>new DOMPoint(x,y).matrixTransform(m));
+    const edge=label.getAttribute('data-gap-label'),box=svg.querySelector(`rect[data-gap-box="${edge}"]`);
+    const bounds=box?rectBox(box):null;
+    return {edge,text:label.textContent,inside:points.every(p=>p.x>=view.x-1&&p.y>=view.y-1&&p.x<=view.x+view.width+1&&p.y<=view.y+view.height+1),insideBox:bounds&&points.every(p=>p.x>=bounds.x-1&&p.y>=bounds.y-1&&p.x<=bounds.x+bounds.width+1&&p.y<=bounds.y+bounds.height+1)};
+  });
+  return {result,wall:rectBox(svg.querySelector('rect[data-wall]')||svg.querySelector('rect[stroke="#182b3a"][stroke-width="2.6"]')),group:rectBox(svg.querySelector('[data-group="assembly"]')),gaps:[...svg.querySelectorAll('line[data-gap-edge]')].map(line=>({edge:line.dataset.gapEdge,mm:Number(line.dataset.gapMm),...Object.fromEntries(['x1','y1','x2','y2'].map(key=>[key,Number(line.getAttribute(key))]))})),labels};
+});
+function assertDrawnGaps(readback) {
+  const {result,wall,group,gaps,labels}=readback;
+  assert.deepEqual(gaps.map(g=>g.edge).sort(),['bottom','left','right','top']);
+  assert.deepEqual(labels.map(g=>g.edge).sort(),['bottom','left','right','top']);
+  const scale=wall.width/result.wall.width_mm;
+  const near=(actual,expected,label)=>assert.ok(Math.abs(actual-expected)<0.005,`${label}: ${actual} vs ${expected}`);
+  for(const gap of gaps) {
+    const mm=result.group.gaps[gap.edge];assert.equal(gap.mm,mm);
+    const horizontal=gap.edge==='left'||gap.edge==='right';
+    const drawn=[horizontal?gap.x1:gap.y1,horizontal?gap.x2:gap.y2].sort((a,b)=>a-b);
+    const expected={left:[wall.x,group.x],right:[group.x+group.width,wall.x+wall.width],top:[wall.y,group.y],bottom:[group.y+group.height,wall.y+wall.height]}[gap.edge].sort((a,b)=>a-b);
+    near(drawn[0],expected[0],`${gap.edge} bracket starts on actual wall/frame edge`);
+    near(drawn[1],expected[1],`${gap.edge} bracket ends on actual wall/frame edge`);
+    near(Math.hypot(gap.x2-gap.x1,gap.y2-gap.y1),Math.abs(mm)*scale,`${gap.edge} bracket represents actual mm`);
+    const label=labels.find(l=>l.edge===gap.edge);
+    const number=Number(Math.abs(mm).toPrecision(10)).toLocaleString('en-US',{maximumFractionDigits:6});
+    assert.ok(label.text.toLowerCase().includes(`${mm<0?'overflow':'gap'} ${number} mm`),label.text);
+    assert.equal(label.inside,true,`${gap.edge} dimension label is not clipped`);
+    assert.equal(label.insideBox,true,`${gap.edge} dimension label fits its reserved box`);
+  }
+}
 try {
   await page.goto(url);
   await page.waitForSelector('#diagram svg');
+  assert.equal(await page.locator('#sizing-mode').inputValue(),'manual');
+  assert.equal(await page.locator('input[name="mode"][value="two_zones"]').isChecked(),true);
+  assert.equal(await page.locator('#wall-width').inputValue(),'8000');
+  assert.equal(await page.locator('#wall-height').inputValue(),'3000');
+  for(const [zone,columns,rows] of [[0,'4','4'],[1,'6','4']]) {
+    assert.equal(await countInput(zone,'columns').inputValue(),columns);
+    assert.equal(await countInput(zone,'rows').inputValue(),rows);
+  }
+  assert.equal(await page.locator('#split-controls').isVisible(),false);
+  let manual=await snapshot();
+  assert.equal(manual.sizingMode,'manual');assert.equal(manual.totalCount,40);
+  assert.deepEqual(manual.zones.map(z=>[z.actualWidth,z.actualHeight]),[[2400,1350],[1800,1200]]);
+  assert.deepEqual(manual.group.gaps,{left:1900,right:1900,top:825,bottom:825});
+  assert.equal(manual.zones[0].actualX+2400,manual.zones[1].actualX);
+  assertDrawnGaps(await diagramReadback());
+  await page.waitForTimeout(250);
+  await page.screenshot({path:resolve(root,'qa/manual-default-centered.png'),fullPage:true,animations:'disabled'});
+  check('fresh manual A+B example joins 40 cabinets inside a larger wall with visible 1,900 / 825 mm gap brackets');
+
+  await page.locator('#wall-width').fill('10000');await page.locator('#wall-height').fill('4000');
+  manual=await snapshot();assert.equal(manual.totalCount,40);
+  assert.deepEqual([manual.group.width,manual.group.height],[4200,1350]);
+  assert.deepEqual(manual.group.gaps,{left:2900,right:2900,top:1325,bottom:1325});
+  await countInput(0,'columns').fill('0');assert.equal(await page.locator('#error').isVisible(),true);
+  assert.match(await page.locator('#error').textContent(),/columns/i);await countInput(0,'columns').fill('4');
+  await countInput(1,'rows').fill('2.5');assert.equal(await page.locator('#error').isVisible(),true);
+  await countInput(1,'rows').fill('4');
+  await page.locator('#wall-width').fill('8000');await page.locator('#wall-height').fill('3000');
+  for(const [arrangement,size] of [['side_by_side',[4200,1350]],['stacked',[2400,2550]]]) {
+    await page.locator('#arrangement').selectOption(arrangement);
+    for(const anchor of alignments) {
+      await alignment().selectOption(anchor);manual=await snapshot();assertGroupPlacement(manual,anchor);
+      assert.deepEqual([manual.group.width,manual.group.height],size);
+      const [a,b]=manual.zones;
+      if(arrangement==='side_by_side'){assert.equal(a.actualX+a.actualWidth,b.actualX);assert.equal(a.actualY,b.actualY);}
+      else {assert.equal(a.actualY+a.actualHeight,b.actualY);assert.equal(a.actualX,b.actualX);}
+      assertDrawnGaps(await diagramReadback());
+    }
+  }
+  await page.locator('#arrangement').selectOption('side_by_side');await alignment().selectOption('center');
+  await lockButton().click();
+  assert.equal(await page.locator('#sizing-mode,#arrangement,[data-field="columns"],[data-field="rows"],#load-example').evaluateAll(inputs=>inputs.every(input=>input.disabled)),true);
+  const lockedManual=await savedSession();
+  await page.evaluate(()=>{
+    for(const [selector,value,event] of [['#sizing-mode','auto_fit','change'],['#arrangement','stacked','change'],['[data-zone="0"][data-field="columns"]','8','input'],['[data-zone="1"][data-field="rows"]','9','input']]) {
+      const input=document.querySelector(selector);input.value=value;input.dispatchEvent(new Event(event,{bubbles:true}));
+    }
+    document.getElementById('load-example').dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+  });
+  assert.deepEqual(await savedSession(),lockedManual,'manual counts, sizing mode, arrangement and example are guarded while locked');
+  for(const anchor of alignments) {
+    await page.locator(`[data-anchor="${anchor}"]`).click();manual=await snapshot();assertGroupPlacement(manual,anchor);
+    assert.equal(manual.totalCount,40);assert.deepEqual([manual.group.width,manual.group.height],[4200,1350]);
+    assertDrawnGaps(await diagramReadback());
+  }
+  await alignment().selectOption('center');await page.reload();await page.waitForSelector('#diagram svg');
+  assert.equal(await page.locator('#sizing-mode').inputValue(),'manual');assert.equal(await lockButton().getAttribute('aria-pressed'),'true');
+  assert.equal((await snapshot()).totalCount,40);assertDrawnGaps(await diagramReadback());
+  await context.grantPermissions(['clipboard-read','clipboard-write']);await page.locator('#copy-summary').click();
+  const manualSummary=await page.evaluate(()=>navigator.clipboard.readText());
+  for(const number of ['4,200','1,350','1,900','825'])assert.ok(manualSummary.includes(number),number);
+  assert.match(manualSummary,/manual|cabinet counts/i);
+  const manualPngEvent=page.waitForEvent('download');await page.locator('#export-png').click();
+  await (await manualPngEvent).saveAs(resolve(root,'qa/manual-centered-report.png'));
+  const manualPng=await readFile(resolve(root,'qa/manual-centered-report.png'));assert.equal(manualPng.readUInt32BE(16),1800);assert.ok(manualPng.length>40000);
+  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.locator('#composition-lock').scrollIntoViewIfNeeded();await page.waitForTimeout(250);
+  await page.screenshot({path:resolve(root,'qa/manual-mobile-controls.png'),animations:'disabled'});
+  await page.locator('#diagram').scrollIntoViewIfNeeded();await page.waitForTimeout(250);
+  await page.screenshot({path:resolve(root,'qa/manual-mobile-diagram.png'),animations:'disabled'});
+  await page.setViewportSize({width:1440,height:1100});
+  const wallBeforeConverter=await savedSession();
+  await page.locator('#pixel-converter-tab').click();
+  assert.equal(await page.locator('#pixel-converter-tab').getAttribute('aria-selected'),'true');
+  assert.equal(await page.locator('#conversion-worksheet').isVisible(),true);
+  assert.equal(await page.locator('#wall-worksheet').isVisible(),false);
+  await page.locator('#conversion-example-p15').click();
+  assert.equal(await page.locator('#conversion-mode').inputValue(),'pixels_to_size');
+  assert.match(await page.locator('#conversion-results').textContent(),/2,880 × 1,620 mm/);
+  await page.locator('#conversion-pitch-mm').fill('');
+  assert.equal(await page.locator('#conversion-error').isVisible(),true);
+  assert.equal(await page.locator('#conversion-results').isVisible(),false);
+  await page.locator('#conversion-pitch-mm').fill('1.5');
+  await page.locator('#conversion-pixels-w').fill('1920.5');
+  assert.equal(await page.locator('#conversion-error').isVisible(),true);
+  await page.locator('#conversion-pixels-w').fill('1920');
+  await page.locator('#conversion-example-fractional').click();
+  assert.match(await page.locator('#conversion-theoretical-result').textContent(),/2,000 × 1,133\.333/);
+  assert.match(await page.locator('#conversion-integer-suggestion').textContent(),/2,000 × 1,133 px/);
+  assert.match(await page.locator('#conversion-results').textContent(),/3,000 × 1,699.5 mm/);
+  assert.match(await page.locator('#conversion-results').textContent(),/Height drift−0.5 mm/);
+  await page.locator('#conversion-mode').selectOption('infer_pitch');
+  await page.locator('#conversion-pixels-w').fill('2000');await page.locator('#conversion-pixels-h').fill('1000');
+  assert.equal(await page.locator('#conversion-pitch-warning').getAttribute('data-consistent'),'false');
+  assert.match(await page.locator('#conversion-pitch-result').textContent(),/X 1.5 mmY 1.7 mm/);
+  assert.match(await page.locator('#conversion-pitch-warning').textContent(),/more than 1%/);
+  await page.locator('#conversion-height-mm').fill('1500');
+  assert.equal(await page.locator('#conversion-pitch-warning').getAttribute('data-consistent'),'true');
+  await page.locator('#conversion-height-mm').fill('1700');
+  const converterSaved=await page.evaluate(()=>JSON.parse(localStorage.getItem('led-pixel-converter-v1')));
+  assert.deepEqual(await savedSession(),wallBeforeConverter,'the converter never changes the locked layout or panel library');
+  await page.locator('#wall-layout-tab').click();
+  assert.equal(await page.locator('#conversion-worksheet').isVisible(),false);
+  assert.equal((await snapshot()).totalCount,40);assert.equal(await lockButton().getAttribute('aria-pressed'),'true');
+  await page.locator('#pixel-converter-tab').click();
+  assert.equal(await page.locator('#conversion-height-mm').inputValue(),'1700');
+  await page.reload();await page.locator('#pixel-converter-tab').click();
+  assert.equal(await page.locator('#conversion-mode').inputValue(),'infer_pitch');
+  assert.equal(await page.locator('#conversion-pitch-warning').getAttribute('data-consistent'),'false');
+  assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('led-pixel-converter-v1'))),converterSaved);
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.locator('#conversion-input-title').scrollIntoViewIfNeeded();await page.waitForTimeout(250);
+  await page.screenshot({path:resolve(root,'qa/conversion-mobile-inputs.png'),animations:'disabled'});
+  await page.locator('#conversion-results').scrollIntoViewIfNeeded();await page.waitForTimeout(250);
+  await page.screenshot({path:resolve(root,'qa/conversion-mobile-results.png'),animations:'disabled'});
+  await page.setViewportSize({width:1440,height:1100});await page.locator('#wall-layout-tab').click();
+  assert.deepEqual(await savedSession(),wallBeforeConverter);
+  assertDrawnGaps(await diagramReadback());
+  check('separate pixel worksheet validates P1.5 inverse/fractional/pitch calculations and preserves its state without changing the locked wall');
+  await lockButton().click();
+  check('manual sizes stay independent of wall size; both arrangements, nine locked anchors, persistence and exported gaps work');
+
+  for(const [width,height] of [[3000,1000],[3000,3000],[8000,1000]]) {
+    await page.locator('#wall-width').fill(String(width));await page.locator('#wall-height').fill(String(height));
+    for(const anchor of alignments) {
+      await alignment().selectOption(anchor);manual=await snapshot();assertGroupPlacement(manual,anchor);
+      assert.equal(manual.totalCount,40);assertDrawnGaps(await diagramReadback());
+    }
+    await alignment().selectOption('center');
+    await page.waitForTimeout(250);await page.screenshot({path:resolve(root,`qa/manual-overflow-${width}-${height}.png`),fullPage:true,animations:'disabled'});
+  }
+  await page.locator('#wall-width').fill('3000');await page.locator('#wall-height').fill('1000');await alignment().selectOption('top_right');
+  manual=await snapshot();assert.deepEqual(manual.group.gaps,{left:-1200,right:0,top:0,bottom:-350});
+  await page.locator('#copy-summary').click();assert.match(await page.evaluate(()=>navigator.clipboard.readText()),/overflow 1,200 mm/);
+  const overflowPngEvent=page.waitForEvent('download');await page.locator('#export-png').click();
+  await (await overflowPngEvent).saveAs(resolve(root,'qa/manual-overflow-report.png'));
+  assert.equal((await readFile(resolve(root,'qa/manual-overflow-report.png'))).readUInt32BE(16),1800);
+  check('oversized manual groups label every signed mm edge without clipping at all nine asymmetric and mixed-axis positions');
+
+  await page.locator('#manage-library').click();
+  const customLibrary=await page.evaluate(()=>{
+    const stored=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    return {version:1,panels:[{...stored.panels[0],id:crypto.randomUUID(),name:'Keep my library panel'}]};
+  });
+  await page.locator('#import-file').setInputFiles({name:'keep-library.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(customLibrary))});
+  await page.waitForFunction(()=>document.getElementById('library-status').textContent.includes('Imported'));
+  await page.locator('#close-library').click();
+  const libraryBeforeExample=(await savedSession()).panels;
+  const designBeforeShortcut=await snapshot();
+  await lockButton().click();
+  assert.equal(await page.locator('#load-example').isDisabled(),true);
+  assert.equal(await page.locator('#unlock-from-example').isVisible(),true);
+  await page.locator('#unlock-from-example').click();
+  assert.deepEqual(await snapshot(),designBeforeShortcut,'the example banner unlock shortcut preserves the existing design');
+  await page.locator('#load-example').click();manual=await snapshot();
+  assert.deepEqual((await savedSession()).panels,libraryBeforeExample,'example never resets the user library');
+  assert.equal(manual.totalCount,40);assert.equal(manual.wall.width_mm,8000);assert.equal(manual.wall.height_mm,3000);
+  assert.deepEqual(manual.group.gaps,{left:1900,right:1900,top:825,bottom:825});
+  check('load example restores the smaller centered A+B design while preserving an imported user panel');
+
+  // Preserve the original auto-fit regressions as an explicitly selected workflow.
+  await page.locator('#sizing-mode').selectOption('auto_fit');
+  await page.locator('#wall-width').fill('4800');await page.locator('#wall-height').fill('2700');
+  await page.locator('#split-direction').selectOption('vertical');await page.locator('#split-offset').fill('2400');
+  await page.locator('input[name="mode"][value="single"]').check();
   assert.equal(await page.locator('.metric .value').first().textContent(),'64');
   assert.equal(await page.locator('#error').isVisible(),false);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
@@ -80,13 +284,13 @@ try {
     for(const edge of ['Left','Right','Top','Bottom'])assert.match(results,new RegExp(`${edge} gap`,'i'));
     for(const gap of Object.values(expected))assert.ok(results.includes(`${gap} mm`));
     const drawing=await page.locator('#diagram').textContent();
-    for(const edge of ['Left','Right','Top','Bottom'])assert.ok(drawing.includes(edge));
+    for(const edge of ['Left','Right','Top','Bottom'])assert.match(drawing,new RegExp(edge,'i'));
   }
   await alignment().selectOption('center');
   await page.locator('#fit-strategy').selectOption('cover_wall');
   let current=await snapshot();
   assert.deepEqual(current.group.gaps,{left:-250,right:-250,top:-93.75,bottom:-93.75});
-  assert.match(await page.locator('#results').textContent(),/250 mm overflow/);
+  assert.match(await page.locator('#results').textContent(),/overflow 250 mm/);
   assert.match(await page.locator('#diagram').textContent(),/overflow/);
   await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('true');
   current=await snapshot();
@@ -99,7 +303,7 @@ try {
   await page.locator('#wall-height').fill('2700');
   check('all nine anchors show signed frame gaps, overflow and rotated offsets');
 
-  await page.getByLabel('Two zones',{exact:true}).check();
+  await page.locator('input[name="mode"][value="two_zones"]').check();
   await page.locator('.zone-result').nth(1).waitFor();
   assert.match(await page.locator('#results').textContent(),/3,072 × 1,728/);
   assert.match(await page.locator('#results').textContent(),/104/);
@@ -441,7 +645,7 @@ try {
   assert.match(await page.locator('#results').textContent(),/Partial/);
   assert.match(await page.locator('#results').textContent(),/3,200 W/);
   assert.match(await page.locator('#results').textContent(),/Unknown/);
-  await page.getByLabel('Single panel',{exact:true}).check();
+  await page.locator('input[name="mode"][value="single"]').check();
   current=await snapshot();
   assert.equal(current.power.typical.watts,6400);
   assert.equal(current.power.maximum.watts,12800);
@@ -479,7 +683,7 @@ try {
   await page.locator('#import-file').setInputFiles(resolve(root,'qa/power-library.json'));
   await page.waitForFunction(()=>document.getElementById('library-status').textContent.includes('Imported'));
   await page.locator('#close-library').click();
-  await page.getByLabel('Two zones',{exact:true}).check();
+  await page.locator('input[name="mode"][value="two_zones"]').check();
   current=await snapshot();
   assert.equal(current.zones[1].power.typical.status,'complete');
   assert.equal(current.zones[1].power.typical.watts,0);
@@ -501,12 +705,14 @@ try {
   await page.evaluate(()=>{
     const previous=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
     delete previous.config.alignment;
+    delete previous.config.sizingMode;
     previous.config.zones[0].alignment='center';
     previous.config.zones[1].alignment='bottom_right';
     localStorage.setItem('led-wall-layout-v1',JSON.stringify(previous));
   });
   await page.reload();await page.waitForSelector('#diagram svg');
   assert.equal(await alignment().inputValue(),'center');
+  assert.equal(await page.locator('#sizing-mode').inputValue(),'auto_fit');
   current=await snapshot();
   assertGroupPlacement(current,'center');
   const migrated=JSON.parse(await page.evaluate(()=>localStorage.getItem('led-wall-layout-v1')));
@@ -517,12 +723,14 @@ try {
   await page.evaluate(()=>{
     const legacy=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
     delete legacy.config.alignment;
+    delete legacy.config.sizingMode;
     legacy.config.zones.forEach(z=>delete z.alignment);
     legacy.panels.forEach(p=>{delete p.typical_power_w;delete p.max_power_w;});
     localStorage.setItem('led-wall-layout-v1',JSON.stringify(legacy));
   });
   await page.reload();await page.waitForSelector('#diagram svg');
   assert.equal(await alignment().inputValue(),'bottom_left');
+  assert.equal(await page.locator('#sizing-mode').inputValue(),'auto_fit');
   current=await snapshot();
   assert.equal(current.power.typical.status,'unknown');
   assert.match(await page.locator('#results').textContent(),/Unknown/);
@@ -570,7 +778,7 @@ try {
   await page.locator('#split-offset').fill('2700');
   assert.equal(await page.locator('#error').isVisible(),true);
   await page.locator('#split-offset').fill('1350');
-  await page.getByLabel('Single panel',{exact:true}).check();
+  await page.locator('input[name="mode"][value="single"]').check();
   await page.locator('#wall-width').fill('10');
   assert.match(await page.locator('.metric').first().textContent(),/0/);
   assert.match(await page.locator('#results').textContent(),/0 × 0 px/);
@@ -597,7 +805,11 @@ try {
   assert.match(await page.locator('#results').textContent(),/64/);
   await page.locator('#wall-width').fill('4200');
   assert.equal(await page.locator('.metric .value').first().textContent(),'56');
-  check('offline reload and live calculations after first load');
+  await page.locator('#pixel-converter-tab').click();await page.locator('#conversion-example-p15').click();
+  assert.equal(await page.locator('#conversion-error').isVisible(),false);
+  assert.match(await page.locator('#conversion-results').textContent(),/2,880 × 1,620 mm/);
+  await page.locator('#wall-layout-tab').click();
+  check('offline reload and live calculations in both worksheets after first load');
   assert.deepEqual(errors,[]);
   check('no browser JavaScript errors');
   console.log(`\n${checks.length} browser checks passed. Screenshots/downloads: qa/`);
