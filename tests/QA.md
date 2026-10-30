@@ -1,3 +1,26 @@
+# V1.2 whole-assembly alignment correction · 2026-10-30
+
+This correction supersedes V1.1's per-zone positioning. The fitted cabinet blocks now join first and move together as one fixed assembly; the four reported gaps are measured against the whole wall.
+
+`npm test`: **43 passing tests** (29 calculation/validation, 14 diagram/report).
+
+`npm run test:browser`: **18 passing checks**, actual installed Google Chrome through official Playwright at desktop 1440px and mobile 390px:
+
+- One whole-layout selector; no per-zone position controls.
+- All five positions with unequal vertical, horizontal and rotated blocks. Shared seams stay touching, relative geometry/counts remain unchanged, and wall gaps match the group bounding box.
+- Cover overflow stays explicitly signed at each alignment; obsolete split/overlap claims are removed.
+- Empty zones reserve no space, active insets remain frame-based, exact-fit handling and pixel mapping rules are retained.
+- V1.1 sessions migrate the first zone's choice to global alignment and remove retired zone settings; older V1 sessions retain bottom-left. Power, panel choices, rotation and allocation cut survive reload.
+- Typical/max power, unknown/partial/zero ratings, atomic imports, JSON backups, PNG/summary, mobile, offline reload and export error recovery remain covered. No browser JavaScript errors.
+
+Visually inspected `qa/group-vertical.png` and `qa/group-horizontal.png`: each assembly is centered together with a stepped outline and intact shared seam. PNG and summary expose one assembly alignment and one set of four wall-edge gaps. Generated evidence stays in ignored `qa/`.
+
+Independent review found no blocking findings. A separate 320-layout matrix covered both arrangements, fit/cover, four rotation pairs, empty/nonempty selections and all five positions, checking seams, rigid relative origins, wall gaps, power invariance and report semantics.
+
+An additional 1,000 generated configurations across wall/split variants, both packing directions, fit/cover, all five alignments and rotations preserved relative positions, installed counts/power, joined seams and fit-inside wall bounds.
+
+---
+
 # V1.1 verification · 2026-10-30
 
 `npm test`: **39 passing tests** (27 calculation/validation, 12 diagram/report).

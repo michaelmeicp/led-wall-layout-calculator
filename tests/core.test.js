@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePanel, parseLibrary, orientPanel, calculate, alignmentName, gapText, powerText } from '../core.js';
+import { normalizePanel, parseLibrary, orientPanel, calculate, alignmentName, gapText, powerText, resolveAlignment } from '../core.js';
 
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const panel = (overrides = {}) => ({ id: uuid(1), name: 'FAKE 600', active_width_mm: 600, active_height_mm: 337.5, resolution_w: 192, resolution_h: 108, rotatable: true, ...overrides });
@@ -24,7 +24,8 @@ test('fit-inside floors and cover-wall ceils independently', () => {
   assert.deepEqual([inside.nx, inside.ny, inside.deltaW, inside.deltaH], [4, 4, 100, 50]);
   assert.deepEqual([cover.nx, cover.ny, cover.deltaW, cover.deltaH], [5, 5, -500, -287.5]);
   assert.equal(inside.warnings[0].level, 'amber');
-  assert.equal(cover.warnings[0].level, 'red');
+  assert.ok(cover.warnings.some(w => /exceeds its sizing allocation/.test(w.message)));
+  assert.ok(calculate(config({ wall, strategy: 'cover_wall' }), [panel()]).warnings.some(w => w.level === 'red' && /Assembly overflows/.test(w.message)));
   assert.ok(cover.utilization > 1);
 });
 
@@ -57,13 +58,14 @@ test('large dimensions cannot turn meaningful physical residuals into rounding n
   const cover = calculate(config({ wall: largeWall, strategy: 'cover_wall' }), [one]).zones[0];
   assert.equal(cover.nx, 1000000000000001);
   assert.equal(cover.deltaW, -0.5);
-  assert.ok(cover.warnings.some(w => w.level === 'red' && /overflows/.test(w.message)));
+  assert.ok(cover.warnings.some(w => /exceeds its sizing allocation/.test(w.message)));
   const wide = panel({ active_width_mm: 1000000000000000, active_height_mm: 1, resolution_w: 1, resolution_h: 1 });
   const wideCover = calculate(config({ wall: largeWall, strategy: 'cover_wall' }), [wide]).zones[0];
   assert.equal(wideCover.nx, 2, 'near-integer quotient still has a meaningful 0.5 mm physical residual');
   const cut = 1000000000000000.5;
   const twoZones = calculate(config({ wall: { width_mm: 2000000000000001, height_mm: 1 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: cut }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] }), [one]);
-  assert.equal(twoZones.canvas.combined, false, 'a physical 0.5 mm gap at the cut prevents a clean combined canvas');
+  assert.equal(twoZones.canvas.combined, true, 'packing removes the allocation residual at the internal seam');
+  assert.equal(twoZones.group.deltaW, 1, 'unused allocation space becomes external wall clearance');
 });
 
 test('rotation swaps frame, active area, resolution and pitches together', () => {
@@ -139,22 +141,26 @@ test('same nominal pitch cannot override different actual pixel pitch', () => {
   assert.ok(r.warnings.some(w => /Mixed/.test(w.message)));
 });
 
-test('frame gaps, unequal perpendicular spans and cut gaps require mapping', () => {
+test('allocation underfill packs without a cut gap, while frame gaps and unequal spans require mapping', () => {
   const cfg = config({ wall: { width_mm: 2500, height_mm: 1350 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: 1250 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] });
-  assert.match(calculate(cfg, [panel()]).canvas.reason, /do not abut/);
+  assert.equal(calculate(cfg, [panel()]).canvas.combined, true);
+  assert.equal(calculate(cfg, [panel()]).group.deltaW, 100);
   const noGaps = { ...cfg, wall: { width_mm: 2400, height_mm: 1350 }, split: { direction: 'vertical', offset_mm: 1200 } };
   assert.match(calculate(noGaps, [panel({ active_width_mm: 590, frame_width_mm: 600 })]).canvas.reason, /active-area gaps/);
   const p2 = panel({ id: uuid(2), active_width_mm: 600, active_height_mm: 300, resolution_w: 192, resolution_h: 96 });
   assert.match(calculate({ ...noGaps, zones: [{ panelId: uuid(1) }, { panelId: uuid(2) }] }, [panel(), p2]).canvas.reason, /matching aligned vertical pixel spans/);
 });
 
-test('cover-wall crossing the cut is explicitly flagged as overlap', () => {
+test('cover-wall packs the zones without overlap and flags assembly wall overflow', () => {
   const cfg = config({ wall: { width_mm: 2500, height_mm: 1400 }, mode: 'two_zones', strategy: 'cover_wall', split: { direction: 'vertical', offset_mm: 1250 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] });
   const r = calculate(cfg, [panel()]);
   assert.equal(r.canvas.combined, false);
-  assert.ok(r.warnings.some(w => w.level === 'red' && /crosses the split and overlaps/.test(w.message)));
+  assert.ok(r.warnings.some(w => w.level === 'red' && /Assembly overflows the wall/.test(w.message)));
+  assert.ok(!r.warnings.some(w => /crosses the split|overlaps/.test(w.message)));
+  assert.equal(r.zones[0].actualX + r.zones[0].actualWidth, r.zones[1].actualX);
   const horizontal = calculate({ ...cfg, split: { direction: 'horizontal', offset_mm: 700 } }, [panel()]);
-  assert.ok(horizontal.warnings.some(w => /Bottom zone crosses the split/.test(w.message)));
+  assert.ok(horizontal.warnings.some(w => /Assembly overflows the wall/.test(w.message)));
+  assert.equal(horizontal.zones[0].actualY + horizontal.zones[0].actualHeight, horizontal.zones[1].actualY);
 });
 
 test('zero-fitting cabinet axes have zero footprint, active size and resolution', () => {
@@ -224,7 +230,7 @@ test('wall, split, selection and numerical-range validation', () => {
   assert.throws(() => calculate(config({ wall: { width_mm: 1e-310, height_mm: 1 } }), [panel()]), /too small/);
 });
 
-test('center and all four corners position cabinet frames and label signed gaps', () => {
+test('one whole-assembly alignment controls center and all corners using cabinet frames', () => {
   const positions = {
     center: [50, 25, { left: 50, right: 50, top: 25, bottom: 25 }],
     top_left: [0, 50, { left: 0, right: 100, top: 0, bottom: 50 }],
@@ -233,54 +239,99 @@ test('center and all four corners position cabinet frames and label signed gaps'
     bottom_right: [100, 0, { left: 100, right: 0, top: 50, bottom: 0 }],
   };
   for (const [alignment, expected] of Object.entries(positions)) {
-    const z = calculate(config({ wall: { width_mm: 2500, height_mm: 1400 }, zones: [{ panelId: uuid(1), alignment }] }), [panel({ active_width_mm: 580, frame_width_mm: 600 })]).zones[0];
-    assert.deepEqual([z.actualX, z.actualY, z.gaps], expected, alignment);
-    assert.equal(z.alignment, alignment);
+    const r = calculate(config({ alignment, wall: { width_mm: 2500, height_mm: 1400 } }), [panel({ active_width_mm: 580, frame_width_mm: 600 })]);
+    assert.deepEqual([r.group.x, r.group.y, r.group.gaps], expected, alignment);
+    assert.deepEqual([r.group.width, r.group.height, r.group.hasCabinets, r.group.packing], [2400, 1350, true, 'single']);
+    assert.equal(r.group.alignment, alignment);
+    assert.equal(r.alignment, alignment);
+    assert.deepEqual([r.zones[0].actualX, r.zones[0].actualY], expected.slice(0, 2));
+    assert.ok(!Object.hasOwn(r.zones[0], 'alignment'));
+    assert.ok(!Object.hasOwn(r.zones[0], 'gaps'));
   }
-  assert.equal(calculate(config(), [panel()]).zones[0].alignment, 'bottom_left', 'legacy sessions retain their old anchor');
   assert.equal(alignmentName('top_right'), 'Top right');
   assert.equal(gapText(25), '25 mm gap');
   assert.equal(gapText(-25), '25 mm overflow');
-  assert.throws(() => calculate(config({ zones: [{ panelId: uuid(1), alignment: 'middle_left' }] }), [panel()]), /valid alignment/);
 });
 
-test('overflow stays signed on the aligned edges, including rotated frames and exact tolerance', () => {
+test('global alignment migration validates one choice and ignores obsolete second-zone choices', () => {
+  assert.equal(resolveAlignment(config()), 'bottom_left', 'V1 session fallback');
+  assert.equal(resolveAlignment(config({ zones: [{ panelId: uuid(1), alignment: 'top_right' }] })), 'top_right', 'V1.1 first-zone migration');
+  const cfg = config({ mode: 'two_zones', alignment: 'center', split: { direction: 'vertical', offset_mm: 1200 }, zones: [{ panelId: uuid(1), alignment: 'bad' }, { panelId: uuid(1), alignment: 'also bad' }] });
+  assert.equal(calculate(cfg, [panel()]).alignment, 'center', 'explicit global selection wins');
+  assert.equal(calculate({ ...cfg, alignment: undefined, zones: [{ panelId: uuid(1), alignment: 'top_left' }, cfg.zones[1]] }, [panel()]).alignment, 'top_left');
+  for (const alignment of ['middle_left', '', null, false, 0, {}]) assert.throws(() => calculate(config({ alignment }), [panel()]), /valid alignment/);
+  assert.throws(() => resolveAlignment({ zones: [{ alignment: 'bad' }] }), /valid alignment/);
+});
+
+test('whole-assembly overflow stays signed, including rotation and exact tolerance', () => {
   const wall = { width_mm: 2500, height_mm: 1400 };
-  const centered = calculate(config({ wall, strategy: 'cover_wall', zones: [{ panelId: uuid(1), alignment: 'center' }] }), [panel()]).zones[0];
-  assert.deepEqual(centered.gaps, { left: -250, right: -250, top: -143.75, bottom: -143.75 });
-  assert.deepEqual([centered.actualX, centered.actualY], [-250, -143.75]);
-  const corner = calculate(config({ wall, strategy: 'cover_wall', zones: [{ panelId: uuid(1), alignment: 'top_right' }] }), [panel()]).zones[0];
-  assert.deepEqual(corner.gaps, { left: -500, right: 0, top: 0, bottom: -287.5 });
-  const rotated = calculate(config({ wall: { width_mm: 750, height_mm: 1300 }, zones: [{ panelId: uuid(1), alignment: 'top_right', rotated: true }] }), [panel({ frame_width_mm: 620, frame_height_mm: 350 })]).zones[0];
-  assert.deepEqual([rotated.nx, rotated.ny, rotated.actualX, rotated.actualY], [2, 2, 50, 60]);
-  const exact = calculate(config({ wall: { width_mm: 2399.5, height_mm: 1349.5 }, strategy: 'exact_only', zones: [{ panelId: uuid(1), alignment: 'center' }] }), [panel()]).zones[0];
-  assert.deepEqual(exact.gaps, { left: -0.25, right: -0.25, top: -0.25, bottom: -0.25 });
-  assert.ok(exact.warnings.some(w => /overflows/.test(w.message)));
+  const centered = calculate(config({ alignment: 'center', wall, strategy: 'cover_wall' }), [panel()]);
+  assert.deepEqual(centered.group.gaps, { left: -250, right: -250, top: -143.75, bottom: -143.75 });
+  assert.deepEqual([centered.zones[0].actualX, centered.zones[0].actualY], [-250, -143.75]);
+  const corner = calculate(config({ alignment: 'top_right', wall, strategy: 'cover_wall' }), [panel()]);
+  assert.deepEqual(corner.group.gaps, { left: -500, right: 0, top: 0, bottom: -287.5 });
+  const rotated = calculate(config({ alignment: 'top_right', wall: { width_mm: 750, height_mm: 1300 }, zones: [{ panelId: uuid(1), rotated: true }] }), [panel({ frame_width_mm: 620, frame_height_mm: 350 })]);
+  assert.deepEqual([rotated.zones[0].nx, rotated.zones[0].ny, rotated.group.x, rotated.group.y], [2, 2, 50, 60]);
+  const exact = calculate(config({ alignment: 'center', wall: { width_mm: 2399.5, height_mm: 1349.5 }, strategy: 'exact_only' }), [panel()]);
+  assert.deepEqual(exact.group.gaps, { left: -0.25, right: -0.25, top: -0.25, bottom: -0.25 });
+  assert.ok(exact.warnings.some(w => w.level === 'red' && /Assembly overflows/.test(w.message)));
 });
 
-test('two-zone alignment is local to each target and combined canvas checks actual edges', () => {
-  const square = panel({ active_width_mm: 300, active_height_mm: 300, resolution_w: 100, resolution_h: 100 });
-  const cfg = config({ wall: { width_mm: 1300, height_mm: 1000 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_right' }, { panelId: uuid(1), alignment: 'top_left' }] });
-  const aligned = calculate(cfg, [square]);
-  assert.deepEqual(aligned.zones.map(z => [z.actualX, z.actualY]), [[50, 100], [650, 100]]);
-  assert.equal(aligned.canvas.combined, true, 'grids can meet across the cut with outer clearances');
-  const shifted = calculate({ ...cfg, zones: [cfg.zones[0], { ...cfg.zones[1], alignment: 'bottom_left' }] }, [square]);
-  assert.equal(shifted.canvas.combined, false, 'matching dimensions do not hide a vertical offset');
-  const separated = calculate({ ...cfg, zones: cfg.zones.map(z => ({ ...z, alignment: 'center' })) }, [square]);
-  assert.equal(separated.canvas.combined, false, 'clearances at the cut prevent abutment');
-  const horizontal = calculate({ ...cfg, wall: { width_mm: 1000, height_mm: 1300 }, split: { direction: 'horizontal', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_left' }, { panelId: uuid(1), alignment: 'bottom_left' }] }, [square]);
-  assert.equal(horizontal.canvas.combined, true);
-  assert.deepEqual(horizontal.zones.map(z => [z.actualX, z.actualY]), [[0, 50], [0, 650]]);
+test('unequal vertical and horizontal zones remain one rigid joined silhouette for all five alignments', () => {
+  const other = panel({ id: uuid(2), active_width_mm: 350, active_height_mm: 300, resolution_w: 112, resolution_h: 96 });
+  for (const direction of ['vertical', 'horizontal']) {
+    const cfg = config({ wall: { width_mm: 2500, height_mm: 1400 }, mode: 'two_zones', split: { direction, offset_mm: direction === 'vertical' ? 1250 : 700 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(2) }] });
+    const baseline = calculate({ ...cfg, alignment: 'bottom_left' }, [panel(), other]);
+    const expectedSize = direction === 'vertical' ? [2250, 1350] : [2450, 1275];
+    assert.deepEqual([baseline.group.width, baseline.group.height], expectedSize);
+    for (const alignment of ['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right']) {
+      const r = calculate({ ...cfg, alignment }, [panel(), other]);
+      const [a, b] = r.zones;
+      assert.deepEqual(r.zones.map(z => z.count), baseline.zones.map(z => z.count));
+      assert.deepEqual([r.group.width, r.group.height], expectedSize);
+      assert.deepEqual([a.actualX - r.group.x, a.actualY - r.group.y], [0, 0]);
+      assert.deepEqual([b.actualX - r.group.x, b.actualY - r.group.y], direction === 'vertical' ? [a.actualWidth, 0] : [0, a.actualHeight]);
+      assert.equal(direction === 'vertical' ? a.actualX + a.actualWidth : a.actualY + a.actualHeight, direction === 'vertical' ? b.actualX : b.actualY, 'no internal gap or overlap');
+      const expectedX = alignment === 'center' ? r.group.deltaW / 2 : alignment.endsWith('right') ? r.group.deltaW : 0;
+      const expectedY = alignment === 'center' ? r.group.deltaH / 2 : alignment.startsWith('top') ? r.group.deltaH : 0;
+      assert.deepEqual([r.group.x, r.group.y], [expectedX, expectedY]);
+      assert.equal(r.group.gaps.left + r.group.width + r.group.gaps.right, 2500);
+      assert.equal(r.group.gaps.bottom + r.group.height + r.group.gaps.top, 1400);
+      assert.equal(r.canvas.combined, false, 'unequal perpendicular extents still require processor mapping');
+      assert.ok(!r.warnings.some(w => /crosses the split|overlaps/.test(w.message)));
+    }
+  }
 });
 
-test('either zone can cross the split while overlap depends on actual positions', () => {
+test('packed equal spans combine even when sizing allocations underfill', () => {
   const square = panel({ active_width_mm: 300, active_height_mm: 300, resolution_w: 100, resolution_h: 100 });
-  const cfg = config({ wall: { width_mm: 1300, height_mm: 1000 }, mode: 'two_zones', strategy: 'cover_wall', split: { direction: 'vertical', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_left' }, { panelId: uuid(1), alignment: 'top_right' }] });
-  const r = calculate(cfg, [square]);
-  assert.ok(r.warnings.some(w => /Left zone crosses the split and overlaps/.test(w.message)));
-  assert.ok(r.warnings.some(w => /Right zone crosses the split and overlaps/.test(w.message)));
-  const outward = calculate({ ...cfg, zones: [{ panelId: uuid(1), alignment: 'top_right' }, { panelId: uuid(1), alignment: 'top_left' }] }, [square]);
-  assert.ok(!outward.warnings.some(w => /crosses the split/.test(w.message)), 'outward overflow does not cross the cut');
+  for (const direction of ['vertical', 'horizontal']) {
+    const cfg = config({ alignment: 'center', wall: { width_mm: direction === 'vertical' ? 1300 : 1000, height_mm: direction === 'vertical' ? 1000 : 1300 }, mode: 'two_zones', split: { direction, offset_mm: 650 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] });
+    const r = calculate(cfg, [square]);
+    assert.equal(r.canvas.combined, true);
+    assert.equal(r.group.packing, direction);
+    assert.deepEqual(r.group.gaps, direction === 'vertical' ? { left: 50, right: 50, top: 50, bottom: 50 } : { left: 50, right: 50, top: 50, bottom: 50 });
+    const cover = calculate({ ...cfg, strategy: 'cover_wall' }, [square]);
+    assert.equal(cover.canvas.combined, false);
+    assert.match(cover.canvas.reason, /assembly overflows the wall/);
+    assert.ok(cover.warnings.some(w => /sizing allocation/.test(w.message)));
+    assert.ok(cover.warnings.some(w => w.level === 'red' && /Assembly overflows the wall/.test(w.message)));
+  }
+});
+
+test('empty zones reserve no space and all-empty assemblies stay explicit', () => {
+  for (const direction of ['vertical', 'horizontal']) for (const emptyFirst of [true, false]) {
+    const big = panel({ id: uuid(2), active_width_mm: 2000, active_height_mm: 2000, resolution_w: 100, resolution_h: 100 });
+    const cfg = config({ alignment: 'center', wall: { width_mm: 1300, height_mm: 1300 }, mode: 'two_zones', split: { direction, offset_mm: 650 }, zones: (emptyFirst ? [uuid(2), uuid(1)] : [uuid(1), uuid(2)]).map(panelId => ({ panelId })) });
+    const r = calculate(cfg, [panel(), big]);
+    const installed = r.zones.find(z => z.count > 0);
+    assert.deepEqual([r.group.width, r.group.height], [installed.actualWidth, installed.actualHeight]);
+    assert.deepEqual([installed.actualX, installed.actualY], [r.group.x, r.group.y]);
+    assert.equal(r.group.hasCabinets, true);
+    const empty = calculate({ ...cfg, zones: [{ panelId: uuid(2) }, { panelId: uuid(2) }] }, [panel(), big]);
+    assert.deepEqual([empty.group.width, empty.group.height, empty.group.hasCabinets, empty.group.x, empty.group.y], [0, 0, false, 650, 650]);
+    assert.equal(empty.totalCount, 0);
+  }
 });
 
 test('optional per-panel power validates finite nonnegative values and preserves unknown', () => {

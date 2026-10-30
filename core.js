@@ -181,7 +181,16 @@ function format(value) {
 
 export function alignmentName(alignment) { return ALIGNMENTS[alignment] ?? ALIGNMENTS.bottom_left; }
 
-/** Signed gaps are clearances relative to the zone target; negative means overflow. */
+/** V1.1 had per-zone alignment. Migrate its first choice to one assembly choice;
+ * explicit global alignment wins, while V1 sessions retain bottom-left. */
+export function resolveAlignment(config) {
+  object(config, 'Layout');
+  const alignment = config.alignment !== undefined ? config.alignment : config.zones?.[0]?.alignment ?? 'bottom_left';
+  if (typeof alignment !== 'string' || !Object.hasOwn(ALIGNMENTS, alignment)) throw new Error('Choose a valid alignment for the complete assembly.');
+  return alignment;
+}
+
+/** Signed gaps are assembly-to-wall clearances; negative means overflow. */
 export function gapText(value) { return `${format(Math.abs(value))} mm ${value < 0 ? 'overflow' : 'gap'}`; }
 
 export function powerText(metric) {
@@ -206,8 +215,6 @@ function aggregatePower(entries) {
 
 function makeZone(rectangle, choice, library, strategy) {
   object(choice, `${rectangle.label} selection`);
-  const alignment = choice.alignment ?? 'bottom_left';
-  if (!Object.hasOwn(ALIGNMENTS, alignment)) throw new Error(`Choose a valid alignment for ${rectangle.label}.`);
   const panelId = typeof choice.panelId === 'string' ? choice.panelId.toLowerCase() : choice.panelId;
   const raw = library.find(panel => panel.id === panelId);
   if (!raw) throw new Error(`Choose a library panel for ${rectangle.label}.`);
@@ -223,32 +230,47 @@ function makeZone(rectangle, choice, library, strategy) {
   const resolutionW = count ? finite(nx * panel.resolution_w, 'Pixel width') : 0;
   const resolutionH = count ? finite(ny * panel.resolution_h, 'Pixel height') : 0;
   const deltaW = rectangle.width - actualWidth, deltaH = rectangle.height - actualHeight;
-  const left = alignment === 'center' ? deltaW / 2 : alignment.endsWith('right') ? deltaW : 0;
-  const bottom = alignment === 'center' ? deltaH / 2 : alignment.startsWith('top') ? deltaH : 0;
-  const gaps = { left, right: deltaW - left, top: deltaH - bottom, bottom };
-  const actualX = finite(rectangle.x + left, 'Actual X position'), actualY = finite(rectangle.y + bottom, 'Actual Y position');
-  finite(actualX + actualWidth, 'Actual right extent'); finite(actualY + actualHeight, 'Actual top extent');
   const utilization = finite((actualWidth / rectangle.width) * (actualHeight / rectangle.height), 'Area utilization');
   const warnings = panel.warnings.map(item => ({ ...item }));
   if (!count) warnings.push(warn('amber', `${rectangle.label} is too small for a complete cabinet (${nx} × ${ny}); no active canvas.`));
   if (deltaW < -precision(rectangle.width, actualWidth) || deltaH < -precision(rectangle.height, actualHeight)) {
-    warnings.push(warn('red', `${rectangle.label} overflows its target: ${format(Math.max(0, -deltaW))} mm horizontally, ${format(Math.max(0, -deltaH))} mm vertically.`));
+    warnings.push(warn('amber', `${rectangle.label} exceeds its sizing allocation: ${format(Math.max(0, -deltaW))} mm horizontally, ${format(Math.max(0, -deltaH))} mm vertically. Wall clearance is measured for the complete assembly.`));
   }
   if (deltaW > precision(rectangle.width, actualWidth) || deltaH > precision(rectangle.height, actualHeight)) {
-    warnings.push(warn('amber', `${rectangle.label} underfills its target: ${format(Math.max(0, deltaW))} mm horizontally, ${format(Math.max(0, deltaH))} mm vertically.`));
+    warnings.push(warn('amber', `${rectangle.label} underfills its sizing allocation: ${format(Math.max(0, deltaW))} mm horizontally, ${format(Math.max(0, deltaH))} mm vertically. Cabinets are packed together before assembly alignment.`));
   }
   const power = aggregatePower([{ panel, count }]);
-  return { ...rectangle, panel, alignment, actualX, actualY, gaps, power, rotated: panel.rotated, nx, ny, count, actualWidth, actualHeight, activeWidth, activeHeight, resolutionW, resolutionH, deltaW, deltaH, utilization, warnings };
+  return { ...rectangle, panel, power, rotated: panel.rotated, nx, ny, count, actualWidth, actualHeight, activeWidth, activeHeight, resolutionW, resolutionH, deltaW, deltaH, utilization, warnings };
 }
 
-function canvasFor(zones, mode, split) {
+/** Pack frames edge-to-edge before translating the entire fixed silhouette. */
+function packGroup(zones, wall, mode, split, alignment) {
+  const packing = mode === 'single' ? 'single' : split.direction;
+  const vertical = packing === 'vertical';
+  const width = finite(vertical ? zones.reduce((sum, zone) => sum + zone.actualWidth, 0) : Math.max(...zones.map(zone => zone.actualWidth)), 'Assembly width');
+  const height = finite(packing === 'horizontal' ? zones.reduce((sum, zone) => sum + zone.actualHeight, 0) : Math.max(...zones.map(zone => zone.actualHeight)), 'Assembly height');
+  const deltaW = wall.width_mm - width, deltaH = wall.height_mm - height;
+  const x = alignment === 'center' ? deltaW / 2 : alignment.endsWith('right') ? deltaW : 0;
+  const y = alignment === 'center' ? deltaH / 2 : alignment.startsWith('top') ? deltaH : 0;
+  const gaps = { left: x, right: deltaW - x, top: deltaH - y, bottom: y };
+  let offset = 0;
+  for (const zone of zones) {
+    zone.actualX = finite(x + (vertical ? offset : 0), 'Actual X position');
+    zone.actualY = finite(y + (packing === 'horizontal' ? offset : 0), 'Actual Y position');
+    finite(zone.actualX + zone.actualWidth, 'Actual right extent'); finite(zone.actualY + zone.actualHeight, 'Actual top extent');
+    offset = finite(offset + (vertical ? zone.actualWidth : zone.actualHeight), 'Assembly offset');
+  }
+  return { alignment, x, y, width, height, gaps, deltaW, deltaH, hasCabinets: zones.some(zone => zone.count > 0), packing };
+}
+
+function canvasFor(zones, mode, split, group) {
   const no = reason => ({ combined: false, reason: `Processor mapping / two canvases: ${reason}` });
   if (zones.some(zone => !zone.count)) return { combined: false, reason: 'No combined canvas: at least one zone has no complete cabinets.' };
   if (mode === 'single') return { combined: true, width: zones[0].resolutionW, height: zones[0].resolutionH, reason: 'Single-zone pixel canvas.' };
   const [a, b] = zones;
   if (!same(a.panel.actual_pitch_x_mm, b.panel.actual_pitch_x_mm) || !same(a.panel.actual_pitch_y_mm, b.panel.actual_pitch_y_mm)) return no('actual derived pixel pitches differ.');
   if (zones.some(zone => !same(zone.panel.active_width_mm, zone.panel.frame_width_mm) || !same(zone.panel.active_height_mm, zone.panel.frame_height_mm))) return no('frame insets create incompatible active-area gaps.');
-  if (zones.some(zone => zone.deltaW < -precision(zone.width, zone.actualWidth) || zone.deltaH < -precision(zone.height, zone.actualHeight))) return no('a zone crosses its boundary; clean abutment is not buildable.');
+  if (group.deltaW < -precision(group.width, group.width + group.deltaW) || group.deltaH < -precision(group.height, group.height + group.deltaH)) return no('the complete assembly overflows the wall.');
   if (split.direction === 'vertical') {
     if (!same(a.actualX + a.actualWidth, b.actualX) || !same(a.actualY, b.actualY) || !same(a.actualHeight, b.actualHeight) || a.resolutionH !== b.resolutionH) return no('left and right grids do not abut with matching aligned vertical pixel spans.');
     return { combined: true, width: finite(a.resolutionW + b.resolutionW, 'Combined pixel width'), height: a.resolutionH, reason: 'Clean vertical abutment; equal actual X/Y pitches and aligned pixel rows.' };
@@ -257,7 +279,7 @@ function canvasFor(zones, mode, split) {
   return { combined: true, width: a.resolutionW, height: finite(a.resolutionH + b.resolutionH, 'Combined pixel height'), reason: 'Clean horizontal abutment; equal actual X/Y pitches and aligned pixel columns.' };
 }
 
-/** Alignment is independent within each zone. Horizontal cuts measure from bottom. */
+/** Split allocations determine counts; joined cabinets align as one assembly. */
 export function calculate(config, panels) {
   object(config, 'Layout');
   object(config.wall, 'Wall');
@@ -271,6 +293,7 @@ export function calculate(config, panels) {
   const mode = config.mode ?? 'single', strategy = config.strategy ?? 'fit_inside';
   if (!['single', 'two_zones'].includes(mode)) throw new Error('Choose single or two zones.');
   if (!['fit_inside', 'cover_wall', 'exact_only'].includes(strategy)) throw new Error('Choose a valid fit strategy.');
+  const alignment = resolveAlignment(config);
   if (!Array.isArray(panels)) throw new Error('Panel library must be an array.');
   const library = parseLibrary(panels);
   if (!Array.isArray(config.zones) || config.zones.length !== (mode === 'single' ? 1 : 2)) throw new Error(`Provide exactly ${mode === 'single' ? 'one zone' : 'two zones'}.`);
@@ -289,21 +312,16 @@ export function calculate(config, panels) {
       : [{ label: 'Bottom zone', x: 0, y: 0, width: wall.width_mm, height: offset_mm }, { label: 'Top zone', x: 0, y: offset_mm, width: wall.width_mm, height: wall.height_mm - offset_mm }];
   }
   const zones = rectangles.map((rectangle, index) => makeZone(rectangle, config.zones[index], library, strategy));
+  const group = packGroup(zones, wall, mode, split, alignment);
   const warnings = zones.flatMap(zone => zone.warnings);
+  if (group.deltaW < -precision(wall.width_mm, group.width) || group.deltaH < -precision(wall.height_mm, group.height)) {
+    warnings.push(warn('red', `Assembly overflows the wall: ${format(Math.max(0, -group.deltaW))} mm horizontally, ${format(Math.max(0, -group.deltaH))} mm vertically. See the signed assembly edge clearances.`));
+  }
   if (mode === 'two_zones') {
     const [a, b] = zones;
     if (!same(a.panel.actual_pitch_x_mm, b.panel.actual_pitch_x_mm) || !same(a.panel.actual_pitch_y_mm, b.panel.actual_pitch_y_mm)) {
       warnings.push(warn('amber', 'Mixed actual pixel pitches: per-zone resolutions require processor mapping.'));
     }
-    const vertical = split.direction === 'vertical';
-    const cut = split.offset_mm;
-    const crosses = vertical
-      ? [a.actualX + a.actualWidth > cut + precision(cut, a.actualX + a.actualWidth), b.actualX < cut - precision(cut, b.actualX)]
-      : [a.actualY + a.actualHeight > cut + precision(cut, a.actualY + a.actualHeight), b.actualY < cut - precision(cut, b.actualY)];
-    const overlapWidth = Math.min(a.actualX + a.actualWidth, b.actualX + b.actualWidth) - Math.max(a.actualX, b.actualX);
-    const overlapHeight = Math.min(a.actualY + a.actualHeight, b.actualY + b.actualHeight) - Math.max(a.actualY, b.actualY);
-    const overlaps = a.count && b.count && overlapWidth > precision(a.actualWidth, b.actualWidth) && overlapHeight > precision(a.actualHeight, b.actualHeight);
-    for (const [index, zone] of zones.entries()) if (zone.count && crosses[index]) warnings.push(warn('red', `${zone.label} crosses the split${overlaps ? ' and overlaps the other zone' : ''}. This is not a clean buildable combined canvas.`));
   }
   const countMap = new Map();
   for (const zone of zones) {
@@ -314,5 +332,5 @@ export function calculate(config, panels) {
   const totalCount = finite(zones.reduce((sum, zone) => sum + zone.count, 0), 'Total cabinet count');
   const utilization = finite(zones.reduce((sum, zone) => sum + zone.utilization * (zone.width / wall.width_mm) * (zone.height / wall.height_mm), 0), 'Total area utilization');
   const counts = [...countMap.values()].map(entry => ({ ...entry, power: aggregatePower(zones.filter(zone => zone.panel.id === entry.panelId)) }));
-  return { wall, mode, strategy, split, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split), utilization };
+  return { wall, mode, strategy, split, alignment, group, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split, group), utilization };
 }

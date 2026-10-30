@@ -12,8 +12,7 @@ export const formatNumber = (value, digits = 2) => Number.isFinite(Number(value)
 const f = formatNumber;
 const rounded = (n) => Math.round(n * 1000) / 1000;
 const orientation = (z) => z.rotated ? '↻ 90°' : '↑ 0°';
-const delta = (n) => `${f(Math.abs(n))} mm ${n < 0 ? 'overflow' : 'leftover'}`;
-const alignmentName = (z) => ALIGNMENTS[z.alignment] || z.alignment;
+const alignmentName = (group) => ALIGNMENTS[group.alignment] || group.alignment;
 const powerLine = (power) => `Typical / average: ${powerText(power.typical)} · Maximum: ${powerText(power.maximum)}`;
 const gapLine = (z) => ['left', 'right', 'top', 'bottom'].map((edge) => `${edge[0].toUpperCase()}${edge.slice(1)}: ${gapText(z.gaps[edge])}`).join(' · ');
 const ratio = (w, h) => w > 0 && h > 0 ? `${f(w / h, 4)}:1` : '—';
@@ -94,12 +93,20 @@ function activeExtents(zone) {
 function splitDescription(result) {
   if (result.mode !== 'two_zones') return 'Single panel type';
   return result.split.direction === 'vertical'
-    ? `Vertical split · ${f(result.split.offset_mm)} mm from LEFT · A left / B right`
-    : `Horizontal split · ${f(result.split.offset_mm)} mm from BOTTOM · A bottom / B top`;
+    ? `Vertical sizing split · ${f(result.split.offset_mm)} mm from LEFT · A / B sizing allocations`
+    : `Horizontal sizing split · ${f(result.split.offset_mm)} mm from BOTTOM · A / B sizing allocations`;
+}
+
+function packingDescription(result) {
+  if (result.mode !== 'two_zones') return 'Single cabinet block';
+  return result.split.direction === 'vertical'
+    ? 'Packed assembly: A left / B right, cabinet frames touch; bottom edges align. Unequal heights create a step.'
+    : 'Packed assembly: A bottom / B top, cabinet frames touch; left edges align. Unequal widths create a step.';
 }
 
 export function summaryText(result, date = new Date()) {
   const wall = result.wall;
+  const group = result.group;
   const lines = [
     'LED WALL PANEL LAYOUT',
     wall.name || 'Untitled wall',
@@ -107,7 +114,12 @@ export function summaryText(result, date = new Date()) {
     `Target: ${f(wall.width_mm)} × ${f(wall.height_mm)} mm; aspect ${ratio(wall.width_mm, wall.height_mm)}`,
     `Mode: ${result.mode === 'two_zones' ? 'Two zones' : 'Single zone'}; strategy: ${strategyName(result.strategy)}`,
     splitDescription(result),
-    'Alignment applies independently within each zone; +X right, +Y up. Gaps measure target edges to cabinet frames; negative clearance is overflow. Active areas are centered in frames.',
+    packingDescription(result),
+    'Alignment moves the complete assembly together; +X right, +Y up. Gaps measure full-wall edges to the assembly bounding box; negative clearance is overflow. Active areas are centered in frames.',
+    `Assembly alignment: ${alignmentName(group)}; group origin (${f(group.x)}, ${f(group.y)}) mm from wall bottom-left`,
+    `Assembly frame bounds: ${f(group.width)} × ${f(group.height)} mm`,
+    `Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`,
+    result.mode === 'two_zones' ? 'The sizing split determines cabinet counts; it is not a fixed physical seam or assembly anchor.' : '',
     '',
   ];
   result.zones.forEach((z, i) => {
@@ -115,23 +127,21 @@ export function summaryText(result, date = new Date()) {
     lines.push(
       `${String.fromCharCode(65 + i)} · ${z.label}`,
       `Model: ${z.panel.name}; orientation: ${z.rotated ? '90° clockwise' : '0° / native'}`,
-      `Zone: ${f(z.width)} × ${f(z.height)} mm; target origin (${f(z.x)}, ${f(z.y)}) mm from wall bottom-left`,
-      `Alignment: ${alignmentName(z)}; frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`,
+      `Sizing allocation: ${f(z.width)} × ${f(z.height)} mm`,
+      `Packed frame origin: (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`,
       `Cabinet: frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm; active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm; ${f(z.panel.resolution_w, 0)} × ${f(z.panel.resolution_h, 0)} px`,
       `Grid: ${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets`,
       `Per-zone resolution: ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px`,
       `Actual frame footprint: ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`,
-      `Against zone: W ${delta(z.deltaW)}; H ${delta(z.deltaH)}`,
-      `Frame edge gaps: ${gapLine(z)}${z.count ? '' : ' (no cabinets installed)'}`,
       `Zone power: ${powerLine(z.power)}`,
-      `Frame area / zone area: ${f(z.utilization * 100)}%; active extent aspect: ${ratio(active.width, active.height)}; pixel aspect: ${ratio(z.resolutionW, z.resolutionH)}`,
+      `Frame area / sizing allocation: ${f(z.utilization * 100)}%; active extent aspect: ${ratio(active.width, active.height)}; pixel aspect: ${ratio(z.resolutionW, z.resolutionH)}`,
       '',
     );
   });
   lines.push(`Total: ${f(result.totalCount, 0)} cabinets`, 'Counts by SKU:');
   for (const c of result.counts || []) lines.push(`- ${c.name} [${c.panelId}]: ${f(c.count, 0)} cabinets; ${powerLine(c.power)}`);
   lines.push(`Whole wall power: ${powerLine(result.power)}`);
-  lines.push(`Sum of frame areas / target area: ${f(result.utilization * 100)}% (overlap, if any, is counted twice)`);
+  lines.push(`Installed frame area / wall area: ${f(result.utilization * 100)}%`);
   lines.push(result.canvas?.combined
     ? `Combined canvas: ${f(result.canvas.width, 0)} × ${f(result.canvas.height, 0)} px. ${result.canvas.reason || ''}`
     : `Processor mapping / separate canvases: ${result.canvas?.reason || 'Use the per-zone resolutions.'}`);
@@ -147,6 +157,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   const W = 1200;
   const wall = result.wall;
   const zones = result.zones;
+  const group = result.group;
   const colors = colorsFor(result);
   const titleLines = report ? wrap(wall.name || 'Untitled wall', W - 68, 26, true)
     : [shorten(wall.name || 'Untitled wall', W - 68, 26, true)];
@@ -220,42 +231,24 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
       }
       parts.push(rect(x, y, w, h, `data-zone="${i}" data-frame-x-mm="${z.actualX}" data-frame-y-mm="${z.actualY}" fill="none" stroke="${c.line}" stroke-width="1.6"`));
     }
-    // Target zone outline and labeled origin are separate from actual footprint.
-    parts.push(rect(X(z.x), Y(z.y + z.height), S(z.width), S(z.height), 'fill="none" stroke="#697d8d" stroke-width="0.8" stroke-dasharray="4 4"'));
-    const bx = X(z.x), by = Y(z.y);
-    parts.push(`<path d="M${bx} ${by - 15}V${by}H${bx + 15}" fill="none" stroke="${INK}" stroke-width="2"/>`);
-    const badgeX = Math.min(X(wall.width_mm) - 29, Math.max(X(0) + 4, bx + 5));
-    const badgeY = by - 29;
-    parts.push(rect(badgeX, badgeY, 23, 23, `rx="4" fill="#fff" stroke="${c.line}" stroke-width="1.5"`));
-    parts.push(text(badgeX + 11.5, badgeY + 16, String.fromCharCode(65 + i), 14, `text-anchor="middle" font-weight="700" fill="${c.line}"`));
-    if (!z.count && S(z.width) > 145 && S(z.height) > 36) parts.push(text(X(z.x + z.width / 2), Y(z.y + z.height / 2), 'No cabinets fit', 13, `text-anchor="middle" fill="${MUTED}"`));
-  });
-  // Keep both actual outlines visible when a cover layout crosses the split.
-  zones.forEach((z) => {
-    if (!z.count) return;
-    const overflow = Object.values(z.gaps).some((value) => value < 0);
-    parts.push(rect(X(z.actualX), Y(z.actualY + z.actualHeight), S(z.actualWidth), S(z.actualHeight), `fill="none" stroke="${overflow ? '#a62439' : colors.get(z.panel.id).line}" stroke-width="1.7"${overflow ? ' stroke-dasharray="6 3"' : ''}`));
-  });
-  if (zones.length === 2 && zones.every((z) => z.count > 0)) {
-    const [a, b] = zones;
-    const left = Math.max(a.actualX, b.actualX), right = Math.min(a.actualX + a.actualWidth, b.actualX + b.actualWidth);
-    const bottom = Math.max(a.actualY, b.actualY), top = Math.min(a.actualY + a.actualHeight, b.actualY + b.actualHeight);
-    if (right > left && top > bottom) {
-      defs.push('<pattern id="overlap-hatch" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M-2 2L2 -2M0 10L10 0M8 12L12 8" stroke="#a62439" stroke-width="1.6"/></pattern>');
-      parts.push(rect(X(left), Y(top), S(right - left), S(top - bottom), 'fill="url(#overlap-hatch)" stroke="#a62439" stroke-width="1.7"'));
-      if (S(right - left) > 90 && S(top - bottom) > 24) parts.push(text(X((left + right) / 2), Y((bottom + top) / 2), 'OVERLAP', 12, 'text-anchor="middle" font-weight="700" fill="#a62439" paint-order="stroke" stroke="#fff" stroke-width="4"'));
+    // Letter badges identify the installed blocks, independent of sizing allocations.
+    if (z.count && w >= 30 && h >= 30) {
+      const badgeX = x + 5, badgeY = y + 5;
+      parts.push(rect(badgeX, badgeY, 23, 23, `rx="4" fill="#fff" stroke="${c.line}" stroke-width="1.5"`));
+      parts.push(text(badgeX + 11.5, badgeY + 16, String.fromCharCode(65 + i), 14, `text-anchor="middle" font-weight="700" fill="${c.line}"`));
     }
+  });
+  // The bounding rectangle belongs to the complete packed assembly; stepped
+  // blocks need not occupy every point inside these bounds.
+  if (group.hasCabinets) {
+    const overflow = Object.values(group.gaps).some((value) => value < 0);
+    parts.push(rect(X(group.x), Y(group.y + group.height), S(group.width), S(group.height), `data-group="assembly" data-group-x-mm="${group.x}" data-group-y-mm="${group.y}" fill="none" stroke="${overflow ? '#a62439' : '#67528b'}" stroke-width="1.7" stroke-dasharray="6 3"`));
+  } else {
+    parts.push(text(X(wall.width_mm / 2), Y(wall.height_mm / 2), 'No cabinets installed', 16, `text-anchor="middle" fill="${MUTED}"`));
   }
-  // Wall border remains visible across frames and any zone overflow.
+  // The full wall is the only fixed placement boundary. Sizing split information
+  // stays in the text so it cannot be mistaken for the physical cabinet seam.
   parts.push(rect(X(0), Y(wall.height_mm), S(wall.width_mm), S(wall.height_mm), 'fill="none" stroke="#182b3a" stroke-width="2.6"'));
-  if (result.mode === 'two_zones') {
-    const cut = result.split.offset_mm;
-    if (result.split.direction === 'vertical') {
-      parts.push(line(X(cut), Y(0), X(cut), Y(wall.height_mm), 'stroke="#a82e46" stroke-width="2" stroke-dasharray="8 5"'));
-    } else {
-      parts.push(line(X(0), Y(cut), X(wall.width_mm), Y(cut), 'stroke="#a82e46" stroke-width="2" stroke-dasharray="8 5"'));
-    }
-  }
   // Dimension brackets are tied to the target, not to an overflowing footprint.
   const dimY = plot.y + plot.h + 27;
   parts.push(line(X(0), dimY, X(wall.width_mm), dimY, 'stroke="#4c6070" stroke-width="1"'));
@@ -271,7 +264,11 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
 
   let y = 666 + headerExtra;
   y += paragraph(34, y, splitDescription(result), 14, 'font-weight="700"') + 3;
-  y += paragraph(34, y, 'Independent alignment per zone · +X right, +Y up · Dark outline = target · Red dashed = split / overflow · Red hatch = overlap', 12, `fill="${MUTED}"`) + 5;
+  y += paragraph(34, y, packingDescription(result), 12, `fill="${MUTED}"`) + 5;
+  y += paragraph(34, y, `Assembly alignment: ${alignmentName(group)} · Frame bounds ${f(group.width)} × ${f(group.height)} mm · Origin (${f(group.x)}, ${f(group.y)}) mm`, 14, 'font-weight="700"');
+  y += paragraph(34, y, `Wall edge gaps: ${gapLine(group)}${group.hasCabinets ? '' : ' (no cabinets installed)'}`, 14, 'font-weight="700"');
+  y += paragraph(34, y, 'Dark outline = full wall · Dashed outline = complete assembly bounds (red for overflow) · Gaps measure wall to assembly bounds.', 12, `fill="${MUTED}"`) + 5;
+  if (result.mode === 'two_zones') y += paragraph(34, y, 'Sizing split determines counts only; the physical seam moves with the assembly. Empty blocks reserve no space.', 12, `fill="${MUTED}"`);
   y += paragraph(34, y, `Cabinet edges show physical frames; inset fill shows centered active area. Scale: ${f(100 / scale)} mm per 100 drawing units.`, 12, `fill="${MUTED}"`);
   if (reducedDetail) {
     y += 7;
@@ -284,10 +281,9 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
     parts.push(rect(34, y - 12, 15, 15, `rx="2" fill="${c.fill}" stroke="${c.line}" stroke-width="1.5"`));
     y += paragraph(60, y, `${String.fromCharCode(65 + i)} · ${z.label} — ${z.panel.name} · ${orientation(z)}`, 15, 'font-weight="700"', 22);
     y += paragraph(60, y, `${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets   |   ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px   |   Footprint ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`, 13);
-    y += paragraph(60, y, `Alignment: ${alignmentName(z)} · Frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `Frame edge gaps: ${gapLine(z)}${z.count ? '' : ' (no cabinets installed)'}`, 13, 'font-weight="700"');
+    y += paragraph(60, y, `Packed frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `Zone power: ${powerLine(z.power)}`, 12, `fill="${MUTED}"`);
-    y += paragraph(60, y, `Zone ${f(z.width)} × ${f(z.height)} mm   |   W: ${delta(z.deltaW)}   ·   H: ${delta(z.deltaH)}   |   Area ${f(z.utilization * 100)}%`, 12, `fill="${MUTED}"`);
+    y += paragraph(60, y, `Sizing allocation ${f(z.width)} × ${f(z.height)} mm · Frame area / allocation ${f(z.utilization * 100)}%`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `Frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm   ·   Active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `LED active extent aspect ${ratio(active.width, active.height)}   ·   LED pixel aspect ${ratio(z.resolutionW, z.resolutionH)}`, 12, `fill="${MUTED}"`) + 12;
   });
@@ -299,7 +295,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
       : `Processor mapping / separate canvases: ${result.canvas?.reason || 'Use per-zone resolutions.'}`;
     y += paragraph(34, y + 12, canvasLine, 14, 'font-weight="700"', 22);
     y += 8;
-    y += paragraph(34, y + 12, `Target aspect ${ratio(wall.width_mm, wall.height_mm)} · Sum of frame areas / target ${f(result.utilization * 100)}% (overlap, if any, counted twice)`, 13, `fill="${MUTED}"`) + 10;
+    y += paragraph(34, y + 12, `Target aspect ${ratio(wall.width_mm, wall.height_mm)} · Installed frame area / wall ${f(result.utilization * 100)}%`, 13, `fill="${MUTED}"`) + 10;
     y += paragraph(34, y + 12, `Counts by SKU: ${(result.counts || []).map((c) => `${c.name} × ${f(c.count, 0)}`).join('   |   ')}`, 13, '', 21);
     y += 14;
     for (const c of result.counts || []) {
@@ -330,7 +326,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   const height = Math.ceil(y + 14);
   const width = report ? 1800 : 1200;
   const pixelHeight = Math.round(height * width / W);
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount, 0))} cabinets. All dimensions in millimeters. Actual footprint includes any overflow.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="layout-svg" role="img" aria-label="LED wall layout diagram" width="${width}" height="${pixelHeight}" viewBox="0 0 ${W} ${height}"><title>${esc(wall.name || 'LED wall layout')}</title><desc>${esc(splitDescription(result))}. ${esc(f(result.totalCount, 0))} cabinets. Assembly alignment ${esc(alignmentName(group))}. Wall edge gaps: ${esc(gapLine(group))}. All dimensions in millimeters.</desc><defs>${defs.join('')}</defs><rect width="${W}" height="${height}" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="${INK}">${parts.join('')}</g></svg>`;
 }
 
 export async function downloadPNG(result) {

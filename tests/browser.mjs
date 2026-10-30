@@ -29,7 +29,17 @@ const snapshot=()=>page.evaluate(async()=>{
   const saved=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
   return calculate({...saved.config,zones:saved.config.zones.slice(0,saved.config.mode==='single'?1:2)},saved.panels);
 });
-const alignment=(zone=0)=>page.locator(`[data-zone="${zone}"][data-field="alignment"]`);
+const alignment=()=>page.locator('#layout-alignment');
+const alignments=['center','top_left','top_right','bottom_left','bottom_right'];
+function assertGroupPlacement(result,value) {
+  const {group,wall}=result;
+  const dx=wall.width_mm-group.width,dy=wall.height_mm-group.height;
+  const left=value==='center'?dx/2:value.endsWith('right')?dx:0;
+  const bottom=value==='center'?dy/2:value.startsWith('top')?dy:0;
+  assert.equal(group.alignment,value);
+  assert.equal(group.x,left);assert.equal(group.y,bottom);
+  assert.deepEqual(group.gaps,{left,right:dx-left,top:dy-bottom,bottom});
+}
 try {
   await page.goto(url);
   await page.waitForSelector('#diagram svg');
@@ -40,6 +50,7 @@ try {
   check('desktop default decimal cabinet grid and layout');
 
   assert.equal(await alignment().inputValue(),'center');
+  assert.equal(await page.locator('[data-zone][data-field="alignment"]').count(),0);
   await page.locator('#wall-width').fill('2500');
   await page.locator('#wall-height').fill('1500');
   for(const [value,expected] of [
@@ -51,7 +62,8 @@ try {
   ]) {
     await alignment().selectOption(value);
     const current=await snapshot();
-    assert.deepEqual(current.zones[0].gaps,expected,`${value} uses frame dimensions`);
+    assert.deepEqual(current.group.gaps,expected,`${value} uses frame dimensions`);
+    assertGroupPlacement(current,value);
     assert.equal(current.zones[0].actualX,expected.left);
     assert.equal(current.zones[0].actualY,expected.bottom);
     const results=await page.locator('#results').textContent();
@@ -63,14 +75,14 @@ try {
   await alignment().selectOption('center');
   await page.locator('#fit-strategy').selectOption('cover_wall');
   let current=await snapshot();
-  assert.deepEqual(current.zones[0].gaps,{left:-250,right:-250,top:-93.75,bottom:-93.75});
+  assert.deepEqual(current.group.gaps,{left:-250,right:-250,top:-93.75,bottom:-93.75});
   assert.match(await page.locator('#results').textContent(),/250 mm overflow/);
   assert.match(await page.locator('#diagram').textContent(),/overflow/);
   await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('true');
   current=await snapshot();
   assert.equal(current.zones[0].panel.frame_width_mm,337.5);
   assert.equal(current.zones[0].panel.frame_height_mm,600);
-  assert.deepEqual(current.zones[0].gaps,{left:-100,right:-100,top:-150,bottom:-150});
+  assert.deepEqual(current.group.gaps,{left:-100,right:-100,top:-150,bottom:-150});
   await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('false');
   await page.locator('#fit-strategy').selectOption('fit_inside');
   await page.locator('#wall-width').fill('4800');
@@ -78,17 +90,81 @@ try {
   check('center and four corners show signed frame gaps, overflow and rotated offsets');
 
   await page.getByLabel('Two zones',{exact:true}).check();
-  await page.waitForSelector('.zone-result:nth-child(2)');
+  await page.locator('.zone-result').nth(1).waitFor();
   assert.match(await page.locator('#results').textContent(),/3,072 × 1,728/);
   assert.match(await page.locator('#results').textContent(),/104/);
   assert.match(await page.locator('.mapping').textContent(),/Aligned pixel canvas/);
   await page.screenshot({path:resolve(root,'qa/two-zones.png'),fullPage:true});
   check('two-zone mixed 600 × 337.5 / 300 × 300 aligned canvas');
 
+  await page.locator('#wall-width').fill('2800');
+  await page.locator('#wall-height').fill('1575');
+  for(const [direction,cut,size,relative] of [
+    ['vertical','1250',{width:2700,height:1500},{x:1200,y:0}],
+    ['horizontal','700',{width:2700,height:1275},{x:0,y:675}],
+  ]) {
+    await page.locator('#split-direction').selectOption(direction);
+    await page.locator('#split-offset').fill(cut);
+    const footprints=[];
+    for(const value of alignments) {
+      await alignment().selectOption(value);
+      const assembled=await snapshot();
+      assertGroupPlacement(assembled,value);
+      assert.equal(assembled.group.width,size.width);
+      assert.equal(assembled.group.height,size.height);
+      const [a,b]=assembled.zones;
+      assert.equal(b.actualX-a.actualX,relative.x,`${direction}: X relation must not change at ${value}`);
+      assert.equal(b.actualY-a.actualY,relative.y,`${direction}: Y relation must not change at ${value}`);
+      if(direction==='vertical') {
+        assert.equal(a.actualX+a.actualWidth,b.actualX,'packed vertical grids touch');
+        assert.equal(a.actualY,b.actualY,'vertical grids share bottom edge');
+        assert.notEqual(a.actualHeight,b.actualHeight,'exercise stepped top outline');
+      } else {
+        assert.equal(a.actualY+a.actualHeight,b.actualY,'packed horizontal grids touch');
+        assert.equal(a.actualX,b.actualX,'horizontal grids share left edge');
+        assert.notEqual(a.actualWidth,b.actualWidth,'exercise stepped right outline');
+      }
+      assert.equal('gaps' in a,false,'edge gaps belong to the whole assembly');
+      assert.equal('alignment' in a,false,'zones have no independent alignment');
+      footprints.push(assembled.zones.map(z=>[z.nx,z.ny,z.actualWidth,z.actualHeight]));
+    }
+    footprints.forEach(f=>assert.deepEqual(f,footprints[0],'alignment only translates the entire assembled group'));
+    await alignment().selectOption('center');
+    assert.match(await page.locator('.mapping').textContent(),/Processor mapping/);
+    await page.screenshot({path:resolve(root,`qa/group-${direction}.png`),fullPage:true});
+  }
+  await page.locator('#split-direction').selectOption('vertical');
+  await page.locator('#split-offset').fill('1250');
+  await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('true');
+  for(const value of alignments) {
+    await alignment().selectOption(value);
+    const rotated=await snapshot();
+    assertGroupPlacement(rotated,value);
+    assert.equal(rotated.group.width,2512.5);
+    assert.equal(rotated.group.height,1500);
+    assert.equal(rotated.zones[0].actualX+1012.5,rotated.zones[1].actualX);
+    assert.equal(rotated.zones[0].actualY,rotated.zones[1].actualY);
+  }
+  await page.locator('[data-zone="0"][data-field="rotated"]').selectOption('false');
+  await alignment().selectOption('center');
+  await page.locator('#wall-width').fill('4800');
+  await page.locator('#wall-height').fill('2700');
+  await page.locator('#split-direction').selectOption('vertical');
+  check('unequal vertical, horizontal and rotated grids stay joined at all five whole-group positions');
+
   await page.locator('#split-offset').fill('2500');
   await page.locator('#fit-strategy').selectOption('cover_wall');
-  assert.match(await page.locator('.warnings').textContent(),/overlaps/);
-  assert.match(await page.locator('.mapping').textContent(),/Processor mapping/);
+  for(const value of alignments) {
+    await alignment().selectOption(value);
+    current=await snapshot();
+    assertGroupPlacement(current,value);
+    assert.equal(current.zones[0].actualX+current.zones[0].actualWidth,current.zones[1].actualX);
+    assert.equal(current.zones[0].actualY,current.zones[1].actualY);
+    assert.ok(Object.values(current.group.gaps).some(g=>g<0));
+    assert.match(await page.locator('.warnings').textContent(),/overflow/i);
+    assert.doesNotMatch(await page.locator('.warnings').textContent(),/overlaps|crosses the split/i);
+  }
+  await alignment().selectOption('center');
   const downloadEvent=page.waitForEvent('download');
   await page.locator('#export-png').click();
   const image=await downloadEvent;
@@ -102,15 +178,15 @@ try {
     const saved=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
     return renderDiagram(calculate(saved.config,saved.panels),{report:true});
   });
-  for(const word of ['Left zone','Right zone','overlaps','LAYOUT WARNINGS','Counts by SKU','Left','Right','Top','Bottom','Unknown'])assert.ok(report.includes(word),word);
+  for(const word of ['Left zone','Right zone','overflow','LAYOUT WARNINGS','Counts by SKU','Left','Right','Top','Bottom','Unknown'])assert.ok(report.includes(word),word);
   assert.match(report,/alignment/i);
   assert.match(report,/power/i);
-  check('cover overflow warns against clean canvas; full two-zone PNG downloads');
+  check('cover overflow applies to the assembled group without overlapping grids; full PNG downloads');
 
   await context.grantPermissions(['clipboard-read','clipboard-write']);
   await page.locator('#copy-summary').click();
   const clipboard=await page.evaluate(()=>navigator.clipboard.readText());
-  for(const word of ['Target:','from LEFT','Left zone','Right zone','Grid:','Per-zone resolution:','Actual frame footprint:','overflow','overlaps','Left','Right','Top','Bottom','Unknown'])assert.ok(clipboard.includes(word),word);
+  for(const word of ['Target:','from LEFT','Left zone','Right zone','Grid:','Per-zone resolution:','Actual frame footprint:','overflow','Left','Right','Top','Bottom','Unknown'])assert.ok(clipboard.includes(word),word);
   assert.match(clipboard,/alignment/i);
   assert.match(clipboard,/power/i);
   await page.evaluate(()=>{navigator.clipboard.writeText=async()=>{throw new Error('Test denied');};});
@@ -212,8 +288,7 @@ try {
   await page.locator('#close-library').click();
   await page.locator('#fit-strategy').selectOption('fit_inside');
   await page.locator('#split-offset').fill('2400');
-  await alignment(0).selectOption('bottom_left');
-  await alignment(1).selectOption('top_right');
+  await alignment().selectOption('top_right');
   current=await snapshot();
   assert.equal(current.zones[0].power.typical.watts,3200);
   assert.equal(current.zones[1].power.typical.status,'unknown');
@@ -269,8 +344,7 @@ try {
   assert.equal(current.power.typical.status,'complete');
   assert.equal(current.power.typical.watts,3200);
   await page.reload();await page.waitForSelector('#diagram svg');
-  assert.equal(await alignment(0).inputValue(),'bottom_left');
-  assert.equal(await alignment(1).inputValue(),'top_right');
+  assert.equal(await alignment().inputValue(),'top_right');
   current=await snapshot();
   assert.equal(current.power.typical.watts,3200);
   assert.equal(current.power.maximum.watts,6400);
@@ -279,18 +353,34 @@ try {
   assert.equal(await form.locator('[name="typical_power_w"]').inputValue(),'100');
   assert.equal(await form.locator('[name="max_power_w"]').inputValue(),'200');
   await page.locator('#close-library').click();
-  check('power and independent zone alignment survive JSON import/export and session reload; explicit zero stays known');
+  check('power and whole-group alignment survive JSON import/export and session reload; explicit zero stays known');
 
   const savedWithPower=await page.evaluate(()=>localStorage.getItem('led-wall-layout-v1'));
   await page.evaluate(()=>{
+    const previous=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    delete previous.config.alignment;
+    previous.config.zones[0].alignment='center';
+    previous.config.zones[1].alignment='bottom_right';
+    localStorage.setItem('led-wall-layout-v1',JSON.stringify(previous));
+  });
+  await page.reload();await page.waitForSelector('#diagram svg');
+  assert.equal(await alignment().inputValue(),'center');
+  current=await snapshot();
+  assertGroupPlacement(current,'center');
+  const migrated=JSON.parse(await page.evaluate(()=>localStorage.getItem('led-wall-layout-v1')));
+  assert.equal(migrated.config.alignment,'center');
+  assert.equal(migrated.config.zones.some(z=>'alignment' in z),false);
+  check('V1.1 session migrates the first zone position to one whole-layout alignment');
+
+  await page.evaluate(()=>{
     const legacy=JSON.parse(localStorage.getItem('led-wall-layout-v1'));
+    delete legacy.config.alignment;
     legacy.config.zones.forEach(z=>delete z.alignment);
     legacy.panels.forEach(p=>{delete p.typical_power_w;delete p.max_power_w;});
     localStorage.setItem('led-wall-layout-v1',JSON.stringify(legacy));
   });
   await page.reload();await page.waitForSelector('#diagram svg');
-  assert.equal(await alignment(0).inputValue(),'bottom_left');
-  assert.equal(await alignment(1).inputValue(),'bottom_left');
+  assert.equal(await alignment().inputValue(),'bottom_left');
   current=await snapshot();
   assert.equal(current.power.typical.status,'unknown');
   assert.match(await page.locator('#results').textContent(),/Unknown/);
@@ -320,7 +410,7 @@ try {
   assert.equal(poweredPng.readUInt32BE(16),1800);
   assert.ok(poweredPng.length>40000);
   await page.screenshot({path:resolve(root,'qa/alignment-power.png'),fullPage:true});
-  check('PNG and summary include independent alignment, four edge gaps and W/kW power totals');
+  check('PNG and summary include whole-layout alignment, four wall gaps and W/kW power totals');
 
   // Restore the original nonexact split before existing error-path checks.
   await page.locator('#split-offset').fill('2500');
