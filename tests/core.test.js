@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePanel, parseLibrary, orientPanel, calculate } from '../core.js';
+import { normalizePanel, parseLibrary, orientPanel, calculate, alignmentName, gapText, powerText } from '../core.js';
 
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const panel = (overrides = {}) => ({ id: uuid(1), name: 'FAKE 600', active_width_mm: 600, active_height_mm: 337.5, resolution_w: 192, resolution_h: 108, rotatable: true, ...overrides });
@@ -222,4 +222,118 @@ test('wall, split, selection and numerical-range validation', () => {
     assert.throws(() => normalizePanel(panel({ [key]: 1e-310 })), /numerical range/);
   }
   assert.throws(() => calculate(config({ wall: { width_mm: 1e-310, height_mm: 1 } }), [panel()]), /too small/);
+});
+
+test('center and all four corners position cabinet frames and label signed gaps', () => {
+  const positions = {
+    center: [50, 25, { left: 50, right: 50, top: 25, bottom: 25 }],
+    top_left: [0, 50, { left: 0, right: 100, top: 0, bottom: 50 }],
+    top_right: [100, 50, { left: 100, right: 0, top: 0, bottom: 50 }],
+    bottom_left: [0, 0, { left: 0, right: 100, top: 50, bottom: 0 }],
+    bottom_right: [100, 0, { left: 100, right: 0, top: 50, bottom: 0 }],
+  };
+  for (const [alignment, expected] of Object.entries(positions)) {
+    const z = calculate(config({ wall: { width_mm: 2500, height_mm: 1400 }, zones: [{ panelId: uuid(1), alignment }] }), [panel({ active_width_mm: 580, frame_width_mm: 600 })]).zones[0];
+    assert.deepEqual([z.actualX, z.actualY, z.gaps], expected, alignment);
+    assert.equal(z.alignment, alignment);
+  }
+  assert.equal(calculate(config(), [panel()]).zones[0].alignment, 'bottom_left', 'legacy sessions retain their old anchor');
+  assert.equal(alignmentName('top_right'), 'Top right');
+  assert.equal(gapText(25), '25 mm gap');
+  assert.equal(gapText(-25), '25 mm overflow');
+  assert.throws(() => calculate(config({ zones: [{ panelId: uuid(1), alignment: 'middle_left' }] }), [panel()]), /valid alignment/);
+});
+
+test('overflow stays signed on the aligned edges, including rotated frames and exact tolerance', () => {
+  const wall = { width_mm: 2500, height_mm: 1400 };
+  const centered = calculate(config({ wall, strategy: 'cover_wall', zones: [{ panelId: uuid(1), alignment: 'center' }] }), [panel()]).zones[0];
+  assert.deepEqual(centered.gaps, { left: -250, right: -250, top: -143.75, bottom: -143.75 });
+  assert.deepEqual([centered.actualX, centered.actualY], [-250, -143.75]);
+  const corner = calculate(config({ wall, strategy: 'cover_wall', zones: [{ panelId: uuid(1), alignment: 'top_right' }] }), [panel()]).zones[0];
+  assert.deepEqual(corner.gaps, { left: -500, right: 0, top: 0, bottom: -287.5 });
+  const rotated = calculate(config({ wall: { width_mm: 750, height_mm: 1300 }, zones: [{ panelId: uuid(1), alignment: 'top_right', rotated: true }] }), [panel({ frame_width_mm: 620, frame_height_mm: 350 })]).zones[0];
+  assert.deepEqual([rotated.nx, rotated.ny, rotated.actualX, rotated.actualY], [2, 2, 50, 60]);
+  const exact = calculate(config({ wall: { width_mm: 2399.5, height_mm: 1349.5 }, strategy: 'exact_only', zones: [{ panelId: uuid(1), alignment: 'center' }] }), [panel()]).zones[0];
+  assert.deepEqual(exact.gaps, { left: -0.25, right: -0.25, top: -0.25, bottom: -0.25 });
+  assert.ok(exact.warnings.some(w => /overflows/.test(w.message)));
+});
+
+test('two-zone alignment is local to each target and combined canvas checks actual edges', () => {
+  const square = panel({ active_width_mm: 300, active_height_mm: 300, resolution_w: 100, resolution_h: 100 });
+  const cfg = config({ wall: { width_mm: 1300, height_mm: 1000 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_right' }, { panelId: uuid(1), alignment: 'top_left' }] });
+  const aligned = calculate(cfg, [square]);
+  assert.deepEqual(aligned.zones.map(z => [z.actualX, z.actualY]), [[50, 100], [650, 100]]);
+  assert.equal(aligned.canvas.combined, true, 'grids can meet across the cut with outer clearances');
+  const shifted = calculate({ ...cfg, zones: [cfg.zones[0], { ...cfg.zones[1], alignment: 'bottom_left' }] }, [square]);
+  assert.equal(shifted.canvas.combined, false, 'matching dimensions do not hide a vertical offset');
+  const separated = calculate({ ...cfg, zones: cfg.zones.map(z => ({ ...z, alignment: 'center' })) }, [square]);
+  assert.equal(separated.canvas.combined, false, 'clearances at the cut prevent abutment');
+  const horizontal = calculate({ ...cfg, wall: { width_mm: 1000, height_mm: 1300 }, split: { direction: 'horizontal', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_left' }, { panelId: uuid(1), alignment: 'bottom_left' }] }, [square]);
+  assert.equal(horizontal.canvas.combined, true);
+  assert.deepEqual(horizontal.zones.map(z => [z.actualX, z.actualY]), [[0, 50], [0, 650]]);
+});
+
+test('either zone can cross the split while overlap depends on actual positions', () => {
+  const square = panel({ active_width_mm: 300, active_height_mm: 300, resolution_w: 100, resolution_h: 100 });
+  const cfg = config({ wall: { width_mm: 1300, height_mm: 1000 }, mode: 'two_zones', strategy: 'cover_wall', split: { direction: 'vertical', offset_mm: 650 }, zones: [{ panelId: uuid(1), alignment: 'top_left' }, { panelId: uuid(1), alignment: 'top_right' }] });
+  const r = calculate(cfg, [square]);
+  assert.ok(r.warnings.some(w => /Left zone crosses the split and overlaps/.test(w.message)));
+  assert.ok(r.warnings.some(w => /Right zone crosses the split and overlaps/.test(w.message)));
+  const outward = calculate({ ...cfg, zones: [{ panelId: uuid(1), alignment: 'top_right' }, { panelId: uuid(1), alignment: 'top_left' }] }, [square]);
+  assert.ok(!outward.warnings.some(w => /crosses the split/.test(w.message)), 'outward overflow does not cross the cut');
+});
+
+test('optional per-panel power validates finite nonnegative values and preserves unknown', () => {
+  const legacy = normalizePanel(panel());
+  assert.equal(legacy.typical_power_w, null);
+  assert.equal(legacy.max_power_w, null);
+  const withPower = normalizePanel(panel({ typical_power_w: '125.5', max_power_w: 300 }));
+  assert.equal(withPower.typical_power_w, 125.5);
+  assert.equal(withPower.max_power_w, 300);
+  assert.equal(normalizePanel(panel({ typical_power_w: 0, max_power_w: 0 })).typical_power_w, 0);
+  assert.equal(normalizePanel(panel({ typical_power_w: '', max_power_w: null })).max_power_w, null);
+  assert.throws(() => normalizePanel(panel({ typical_power_w: 301, max_power_w: 300 })), /at least typical/);
+  for (const key of ['typical_power_w', 'max_power_w']) for (const value of [-1, NaN, Infinity, {}, [], true, 'bad', ' ']) assert.throws(() => normalizePanel(panel({ [key]: value })), `${key}: ${String(value)}`);
+});
+
+test('installed cabinet counts calculate power per zone, SKU and whole wall', () => {
+  const p1 = panel({ typical_power_w: 100, max_power_w: 200 });
+  const p2 = panel({ id: uuid(2), active_width_mm: 300, active_height_mm: 300, resolution_w: 100, resolution_h: 100, typical_power_w: 25, max_power_w: 60 });
+  const r = calculate(config({ wall: { width_mm: 2400, height_mm: 1350 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: 1200 }, zones: [{ panelId: uuid(1), alignment: 'center' }, { panelId: uuid(2), alignment: 'top_right', rotated: true }] }), [p1, p2]);
+  assert.deepEqual(r.zones.map(z => z.count), [8, 16]);
+  assert.deepEqual(r.zones.map(z => [z.power.typical.watts, z.power.maximum.watts]), [[800, 1600], [400, 960]]);
+  assert.deepEqual(r.counts.map(sku => [sku.power.typical.watts, sku.power.maximum.watts]), [[800, 1600], [400, 960]]);
+  assert.deepEqual(r.power.typical, { watts: 1200, knownCount: 24, totalCount: 24, status: 'complete' });
+  assert.equal(r.power.maximum.watts, 2560);
+  assert.equal(powerText(r.power.typical), '1,200 W / 1.2 kW');
+  const sameSku = calculate(config({ mode: 'two_zones', split: { direction: 'vertical', offset_mm: 1200 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(1) }] }), [p1]);
+  assert.equal(sameSku.counts.length, 1);
+  assert.equal(sameSku.counts[0].power.maximum.watts, 3200);
+});
+
+test('missing power is unknown or an explicit partial known subtotal, never a complete zero', () => {
+  const p2 = panel({ id: uuid(2), typical_power_w: 0, max_power_w: 100 });
+  const cfg = config({ mode: 'two_zones', split: { direction: 'vertical', offset_mm: 1200 }, zones: [{ panelId: uuid(1) }, { panelId: uuid(2) }] });
+  const r = calculate(cfg, [panel(), p2]);
+  assert.equal(r.zones[0].power.typical.status, 'unknown');
+  assert.equal(powerText(r.zones[0].power.maximum), 'Unknown');
+  assert.deepEqual(r.power.typical, { watts: 0, knownCount: 8, totalCount: 16, status: 'partial' });
+  assert.equal(powerText(r.power.typical), 'Partial: 0 W / 0 kW known (8 of 16 cabinets)');
+  assert.equal(r.power.maximum.watts, 800);
+  const oneRating = calculate(config(), [panel({ max_power_w: 200 })]);
+  assert.equal(oneRating.power.typical.status, 'unknown');
+  assert.equal(oneRating.power.maximum.status, 'complete');
+  const empty = calculate(config({ wall: { width_mm: 100, height_mm: 100 }, zones: [{ panelId: uuid(1), alignment: 'center' }] }), [panel()]);
+  assert.equal(empty.power.typical.status, 'complete');
+  assert.equal(empty.power.typical.watts, 0);
+});
+
+test('version-one imports and JSON persistence retain power without requiring it in old libraries', () => {
+  const powered = normalizePanel(panel({ typical_power_w: 80.5, max_power_w: 200 }));
+  const restored = parseLibrary(JSON.stringify({ version: 1, panels: [powered] }));
+  assert.deepEqual(restored, [powered]);
+  assert.deepEqual(orientPanel(restored[0], true).typical_power_w, 80.5);
+  assert.equal(parseLibrary({ version: 1, panels: [panel()] })[0].max_power_w, null);
+  assert.throws(() => parseLibrary({ version: 1, panels: [panel(), panel({ id: uuid(2), typical_power_w: -1 })] }), /Panel 2: Typical power/);
+  assert.throws(() => calculate(config(), [panel({ max_power_w: Number.MAX_SAFE_INTEGER })]), /Calculated power.*numerical range/);
 });

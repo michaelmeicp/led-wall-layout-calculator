@@ -1,4 +1,5 @@
 // Self-contained SVG reporting. No network fonts, images, or runtime dependencies.
+import { ALIGNMENTS, gapText, powerText } from './core.js';
 const PALETTE = [
   { line: '#276b68', fill: '#e3efed', active: '#acd2cc' },
   { line: '#9c6643', fill: '#f3e9df', active: '#dfbf9f' },
@@ -11,7 +12,10 @@ export const formatNumber = (value, digits = 2) => Number.isFinite(Number(value)
 const f = formatNumber;
 const rounded = (n) => Math.round(n * 1000) / 1000;
 const orientation = (z) => z.rotated ? '↻ 90°' : '↑ 0°';
-const delta = (n) => `${f(Math.abs(n))} mm ${n < -1e-7 ? 'overflow' : 'leftover'}`;
+const delta = (n) => `${f(Math.abs(n))} mm ${n < 0 ? 'overflow' : 'leftover'}`;
+const alignmentName = (z) => ALIGNMENTS[z.alignment] || z.alignment;
+const powerLine = (power) => `Typical / average: ${powerText(power.typical)} · Maximum: ${powerText(power.maximum)}`;
+const gapLine = (z) => ['left', 'right', 'top', 'bottom'].map((edge) => `${edge[0].toUpperCase()}${edge.slice(1)}: ${gapText(z.gaps[edge])}`).join(' · ');
 const ratio = (w, h) => w > 0 && h > 0 ? `${f(w / h, 4)}:1` : '—';
 const strategyName = (s) => ({ fit_inside: 'Fit inside', cover_wall: 'Cover wall', exact_only: 'Exact only' }[s] || s);
 
@@ -103,7 +107,7 @@ export function summaryText(result, date = new Date()) {
     `Target: ${f(wall.width_mm)} × ${f(wall.height_mm)} mm; aspect ${ratio(wall.width_mm, wall.height_mm)}`,
     `Mode: ${result.mode === 'two_zones' ? 'Two zones' : 'Single zone'}; strategy: ${strategyName(result.strategy)}`,
     splitDescription(result),
-    'Anchors: bottom-left of each zone; +X right, +Y up. Frames tile; active areas are centered in frames.',
+    'Alignment applies independently within each zone; +X right, +Y up. Gaps measure target edges to cabinet frames; negative clearance is overflow. Active areas are centered in frames.',
     '',
   ];
   result.zones.forEach((z, i) => {
@@ -111,18 +115,22 @@ export function summaryText(result, date = new Date()) {
     lines.push(
       `${String.fromCharCode(65 + i)} · ${z.label}`,
       `Model: ${z.panel.name}; orientation: ${z.rotated ? '90° clockwise' : '0° / native'}`,
-      `Zone: ${f(z.width)} × ${f(z.height)} mm; anchor (${f(z.x)}, ${f(z.y)}) mm from wall bottom-left`,
+      `Zone: ${f(z.width)} × ${f(z.height)} mm; target origin (${f(z.x)}, ${f(z.y)}) mm from wall bottom-left`,
+      `Alignment: ${alignmentName(z)}; frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`,
       `Cabinet: frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm; active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm; ${f(z.panel.resolution_w, 0)} × ${f(z.panel.resolution_h, 0)} px`,
       `Grid: ${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets`,
       `Per-zone resolution: ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px`,
       `Actual frame footprint: ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`,
       `Against zone: W ${delta(z.deltaW)}; H ${delta(z.deltaH)}`,
+      `Frame edge gaps: ${gapLine(z)}${z.count ? '' : ' (no cabinets installed)'}`,
+      `Zone power: ${powerLine(z.power)}`,
       `Frame area / zone area: ${f(z.utilization * 100)}%; active extent aspect: ${ratio(active.width, active.height)}; pixel aspect: ${ratio(z.resolutionW, z.resolutionH)}`,
       '',
     );
   });
   lines.push(`Total: ${f(result.totalCount, 0)} cabinets`, 'Counts by SKU:');
-  for (const c of result.counts || []) lines.push(`- ${c.name} [${c.panelId}]: ${f(c.count, 0)}`);
+  for (const c of result.counts || []) lines.push(`- ${c.name} [${c.panelId}]: ${f(c.count, 0)} cabinets; ${powerLine(c.power)}`);
+  lines.push(`Whole wall power: ${powerLine(result.power)}`);
   lines.push(`Sum of frame areas / target area: ${f(result.utilization * 100)}% (overlap, if any, is counted twice)`);
   lines.push(result.canvas?.combined
     ? `Combined canvas: ${f(result.canvas.width, 0)} × ${f(result.canvas.height, 0)} px. ${result.canvas.reason || ''}`
@@ -131,7 +139,7 @@ export function summaryText(result, date = new Date()) {
   const warnings = allWarnings(result);
   if (!warnings.length) lines.push('None.');
   else warnings.forEach((w) => lines.push(`- ${String(w.level || 'amber').toUpperCase()}: ${w.message}`));
-  lines.push('', 'Active extent spans the outer lit edges, including gaps between cabinets.', 'Planning geometry only. Confirm product dimensions and processor mapping before installation.');
+  lines.push('', 'Active extent spans the outer lit edges, including gaps between cabinets.', 'Power totals multiply supplied per-panel wattage by installed cabinet count; missing ratings remain unknown or partial. Confirm product dimensions, ratings and processor mapping before installation.');
   return lines.join('\n');
 }
 
@@ -145,10 +153,10 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   const titleExtra = (titleLines.length - 1) * 29;
   const subtitleLines = wrap(`Target ${f(wall.width_mm)} × ${f(wall.height_mm)} mm   ·   ${strategyName(result.strategy)}   ·   ${f(result.totalCount, 0)} cabinets`, W - 68, 15);
   const headerExtra = titleExtra + (subtitleLines.length - 1) * 22;
-  const maxX = Math.max(wall.width_mm, ...zones.map((z) => z.x + z.actualWidth));
-  const maxY = Math.max(wall.height_mm, ...zones.map((z) => z.y + z.actualHeight));
-  const minX = Math.min(0, ...zones.map((z) => z.x));
-  const minY = Math.min(0, ...zones.map((z) => z.y));
+  const maxX = Math.max(wall.width_mm, ...zones.map((z) => z.actualX + z.actualWidth));
+  const maxY = Math.max(wall.height_mm, ...zones.map((z) => z.actualY + z.actualHeight));
+  const minX = Math.min(0, ...zones.map((z) => z.actualX));
+  const minY = Math.min(0, ...zones.map((z) => z.actualY));
   const plot = { x: 94, y: 134 + headerExtra, w: 1014, h: 454 };
   const scale = Math.min(plot.w / (maxX - minX || 1), plot.h / (maxY - minY || 1));
   const ox = plot.x + (plot.w - (maxX - minX) * scale) / 2 - minX * scale;
@@ -178,7 +186,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
     const c = colors.get(z.panel.id);
     const fw = S(z.panel.frame_width_mm), fh = S(z.panel.frame_height_mm);
     const aw = S(z.panel.active_width_mm), ah = S(z.panel.active_height_mm);
-    const x = X(z.x), y = Y(z.y + z.actualHeight);
+    const x = X(z.actualX), y = Y(z.actualY + z.actualHeight);
     const w = S(z.actualWidth), h = S(z.actualHeight);
     const key = `zone-${i}`;
     if (z.count > 0 && w > 0 && h > 0) {
@@ -210,7 +218,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
           for (let row = 1; row < rows; row++) parts.push(line(x, y + h * row / rows, x + w, y + h * row / rows, `stroke="${c.line}" stroke-opacity="0.25" stroke-width="0.5"`));
         }
       }
-      parts.push(rect(x, y, w, h, `fill="none" stroke="${c.line}" stroke-width="1.6"`));
+      parts.push(rect(x, y, w, h, `data-zone="${i}" data-frame-x-mm="${z.actualX}" data-frame-y-mm="${z.actualY}" fill="none" stroke="${c.line}" stroke-width="1.6"`));
     }
     // Target zone outline and labeled origin are separate from actual footprint.
     parts.push(rect(X(z.x), Y(z.y + z.height), S(z.width), S(z.height), 'fill="none" stroke="#697d8d" stroke-width="0.8" stroke-dasharray="4 4"'));
@@ -225,13 +233,13 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
   // Keep both actual outlines visible when a cover layout crosses the split.
   zones.forEach((z) => {
     if (!z.count) return;
-    const overflow = z.deltaW < -1e-7 || z.deltaH < -1e-7;
-    parts.push(rect(X(z.x), Y(z.y + z.actualHeight), S(z.actualWidth), S(z.actualHeight), `fill="none" stroke="${overflow ? '#a62439' : colors.get(z.panel.id).line}" stroke-width="1.7"${overflow ? ' stroke-dasharray="6 3"' : ''}`));
+    const overflow = Object.values(z.gaps).some((value) => value < 0);
+    parts.push(rect(X(z.actualX), Y(z.actualY + z.actualHeight), S(z.actualWidth), S(z.actualHeight), `fill="none" stroke="${overflow ? '#a62439' : colors.get(z.panel.id).line}" stroke-width="1.7"${overflow ? ' stroke-dasharray="6 3"' : ''}`));
   });
   if (zones.length === 2 && zones.every((z) => z.count > 0)) {
     const [a, b] = zones;
-    const left = Math.max(a.x, b.x), right = Math.min(a.x + a.actualWidth, b.x + b.actualWidth);
-    const bottom = Math.max(a.y, b.y), top = Math.min(a.y + a.actualHeight, b.y + b.actualHeight);
+    const left = Math.max(a.actualX, b.actualX), right = Math.min(a.actualX + a.actualWidth, b.actualX + b.actualWidth);
+    const bottom = Math.max(a.actualY, b.actualY), top = Math.min(a.actualY + a.actualHeight, b.actualY + b.actualHeight);
     if (right > left && top > bottom) {
       defs.push('<pattern id="overlap-hatch" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M-2 2L2 -2M0 10L10 0M8 12L12 8" stroke="#a62439" stroke-width="1.6"/></pattern>');
       parts.push(rect(X(left), Y(top), S(right - left), S(top - bottom), 'fill="url(#overlap-hatch)" stroke="#a62439" stroke-width="1.7"'));
@@ -263,7 +271,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
 
   let y = 666 + headerExtra;
   y += paragraph(34, y, splitDescription(result), 14, 'font-weight="700"') + 3;
-  y += paragraph(34, y, 'Bottom-left anchor per zone · +X right, +Y up · Dark outline = target · Red dashed = split / overflow · Red hatch = overlap', 12, `fill="${MUTED}"`) + 5;
+  y += paragraph(34, y, 'Independent alignment per zone · +X right, +Y up · Dark outline = target · Red dashed = split / overflow · Red hatch = overlap', 12, `fill="${MUTED}"`) + 5;
   y += paragraph(34, y, `Cabinet edges show physical frames; inset fill shows centered active area. Scale: ${f(100 / scale)} mm per 100 drawing units.`, 12, `fill="${MUTED}"`);
   if (reducedDetail) {
     y += 7;
@@ -276,10 +284,14 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
     parts.push(rect(34, y - 12, 15, 15, `rx="2" fill="${c.fill}" stroke="${c.line}" stroke-width="1.5"`));
     y += paragraph(60, y, `${String.fromCharCode(65 + i)} · ${z.label} — ${z.panel.name} · ${orientation(z)}`, 15, 'font-weight="700"', 22);
     y += paragraph(60, y, `${f(z.nx, 0)} × ${f(z.ny, 0)} = ${f(z.count, 0)} cabinets   |   ${f(z.resolutionW, 0)} × ${f(z.resolutionH, 0)} px   |   Footprint ${f(z.actualWidth)} × ${f(z.actualHeight)} mm`, 13);
+    y += paragraph(60, y, `Alignment: ${alignmentName(z)} · Frame origin (${f(z.actualX)}, ${f(z.actualY)}) mm from wall bottom-left`, 12, `fill="${MUTED}"`);
+    y += paragraph(60, y, `Frame edge gaps: ${gapLine(z)}${z.count ? '' : ' (no cabinets installed)'}`, 13, 'font-weight="700"');
+    y += paragraph(60, y, `Zone power: ${powerLine(z.power)}`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `Zone ${f(z.width)} × ${f(z.height)} mm   |   W: ${delta(z.deltaW)}   ·   H: ${delta(z.deltaH)}   |   Area ${f(z.utilization * 100)}%`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `Frame ${f(z.panel.frame_width_mm)} × ${f(z.panel.frame_height_mm)} mm   ·   Active ${f(z.panel.active_width_mm)} × ${f(z.panel.active_height_mm)} mm`, 12, `fill="${MUTED}"`);
     y += paragraph(60, y, `LED active extent aspect ${ratio(active.width, active.height)}   ·   LED pixel aspect ${ratio(z.resolutionW, z.resolutionH)}`, 12, `fill="${MUTED}"`) + 12;
   });
+  y += paragraph(34, y, `Whole wall power: ${powerLine(result.power)}`, 13, 'font-weight="700"') + 12;
   if (report) {
     parts.push(line(34, y - 9, W - 34, y - 9, 'stroke="#d4dde5"'));
     const canvasLine = result.canvas?.combined
@@ -290,6 +302,10 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
     y += paragraph(34, y + 12, `Target aspect ${ratio(wall.width_mm, wall.height_mm)} · Sum of frame areas / target ${f(result.utilization * 100)}% (overlap, if any, counted twice)`, 13, `fill="${MUTED}"`) + 10;
     y += paragraph(34, y + 12, `Counts by SKU: ${(result.counts || []).map((c) => `${c.name} × ${f(c.count, 0)}`).join('   |   ')}`, 13, '', 21);
     y += 14;
+    for (const c of result.counts || []) {
+      y += paragraph(34, y, `SKU power · ${c.name} (${f(c.count, 0)} cabinets): ${powerLine(c.power)}`, 13) + 5;
+    }
+    y += 10;
     const warnings = allWarnings(result);
     if (!warnings.length) {
       parts.push(text(34, y, 'No layout warnings.', 13, `fill="${MUTED}"`));
@@ -309,7 +325,7 @@ export function renderDiagram(result, { report = false, date = new Date() } = {}
       });
     }
     y += paragraph(34, y + 12, 'Active extent spans the outer lit edges, including gaps between cabinets.', 11, `fill="${MUTED}"`);
-    y += paragraph(34, y + 12, 'Planning geometry only. Confirm product dimensions and processor mapping before installation.', 11, `fill="${MUTED}"`) + 20;
+    y += paragraph(34, y + 12, 'Power totals multiply supplied per-panel wattage by installed cabinet count; missing ratings remain unknown or partial. Confirm product dimensions, ratings and processor mapping before installation.', 11, `fill="${MUTED}"`) + 20;
   }
   const height = Math.ceil(y + 14);
   const width = report ? 1800 : 1200;

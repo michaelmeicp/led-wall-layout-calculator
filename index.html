@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#173e43">
-  <meta name="description" content="Plan LED cabinet layouts with frame-aware geometry, pixel calculations, two-zone checks, and printable reports. Works offline.">
+  <meta name="description" content="Plan LED cabinet layouts with frame-aware geometry, pixel calculations, positioning, power totals, two-zone checks, and printable reports. Works offline.">
   <title>LED Wall Layout Calculator</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
@@ -13,7 +13,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="./" aria-label="LED Wall Layout Calculator home"><span class="brandmark" aria-hidden="true">▦</span><span>FIELDPLAN <small>LED WALL TOOLS</small></span></a>
-    <div class="topmeta"><span class="version">V1.0</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
+    <div class="topmeta"><span class="version">V1.1</span><span class="local-status" id="storage-status">● Saved on this device</span></div>
   </header>
   <main>
     <div class="page-heading"><div><div class="eyebrow">LAYOUT WORKSPACE</div><h1>LED Wall Layout Calculator</h1><p>From cabinet dimensions to a clear wall plan.</p></div><span class="privacy-note">Local calculations · No account required</span></div>
@@ -30,9 +30,9 @@
           <div class="section-title"><span class="step">02</span><h2>Choose the cabinets</h2><button class="text-button" id="manage-library" type="button">Panel library ↗</button></div>
           <div id="zone-selectors"></div>
           <label>Fit strategy<select id="fit-strategy"><option value="fit_inside">Fit inside · floor</option><option value="cover_wall">Cover wall · ceil</option><option value="exact_only">Exact only · ±0.5 mm / axis</option></select></label>
-          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. Every grid starts at its zone’s bottom-left corner.</p>
+          <p class="helper" id="strategy-help">Fit inside uses whole cabinets within each zone. Position aligns the cabinet frames to the center or a corner of each zone.</p>
         </section>
-        <details class="card method"><summary>How to read this plan</summary><p>Frames determine the physical footprint. Active LED area and resolution determine pixels. Insets are centered within each cabinet.</p><p>Grids anchor to the <strong>bottom-left of each zone</strong>. Vertical cuts measure from the left; horizontal cuts measure from the bottom. Overflow extends right and upward.</p><p>Exact fit compares the nearest positive integer footprint to each target axis, independently, with an inclusive 0.5 mm tolerance. Floor and ceil use only a floating-point roundoff guard, never that tolerance.</p><p>Utilization is summed cabinet footprint / target area; overlap is counted twice and flagged. It can exceed 100%. LED aspect ratio uses aggregate active dimensions, excluding frame gaps.</p><p>Mixed grids get a combined canvas only when their physical and pixel alignment is clean. Otherwise use processor mapping / two canvases.</p><p>Large grids simplify drawing details only. All numerical results remain unchanged.</p></details>
+        <details class="card method"><summary>How to read this plan</summary><p>Frames determine the physical footprint. Active LED area and resolution determine pixels. Insets are centered within each cabinet.</p><p>Choose the <strong>center or a corner of each zone</strong>. Gaps measure from the physical cabinet frame to each zone edge in mm. Negative space is labelled overflow. Vertical cuts measure from the left; horizontal cuts measure from the bottom.</p><p>Exact fit compares the nearest positive integer footprint to each target axis, independently, with an inclusive 0.5 mm tolerance. Floor and ceil use only a floating-point roundoff guard, never that tolerance.</p><p>Utilization is summed cabinet footprint / target area; overlap is counted twice and flagged. It can exceed 100%. LED aspect ratio uses aggregate active dimensions, excluding frame gaps.</p><p>Mixed grids get a combined canvas only when their physical and pixel alignment is clean. Otherwise use processor mapping / two canvases.</p><p>Power totals use installed cabinet counts and the optional typical / average and maximum W per cabinet in your panel library. Missing ratings show unknown or partial totals. These are load estimates, not circuit or installation sizing.</p><p>Large grids simplify drawing details only. All numerical results remain unchanged.</p></details>
       </aside>
       <div class="output">
         <section class="card preview-card" aria-labelledby="preview-title">
@@ -46,7 +46,7 @@
         <p id="action-status" role="status" class="status-message"></p>
       </div>
     </div>
-    <footer>LED Wall Layout Calculator · V1 <span>Geometry & pixels for early layout planning.</span></footer>
+    <footer>LED Wall Layout Calculator · V1.1 <span>Layout, pixels &amp; power estimates.</span></footer>
   </main>
   <dialog id="library-dialog" aria-labelledby="library-title">
     <div class="dialog-header"><div><div class="eyebrow">YOUR COLLECTION</div><h2 id="library-title">Panel library</h2></div><button id="close-library" type="button" class="icon-button" aria-label="Close panel library">✕</button></div>
@@ -63,6 +63,7 @@
         <div class="field-heading">Resolution <small>px · or derive from pitch</small></div><div class="pair"><label>Width<input name="resolution_w" type="number" step="1" min="1"></label><label>Height<input name="resolution_h" type="number" step="1" min="1"></label></div>
         <label>Pixel pitch <span class="optional">mm · optional with explicit resolution</span><input name="pixel_pitch_mm" type="number" step="any" min="0"></label>
         <p class="helper">Missing pixel dimensions use active / pitch, rounded to the nearest integer (half up). Zero-pixel results are invalid. Explicit resolution wins; &gt;1% pitch differences are flagged.</p>
+        <div class="field-heading">Power per cabinet <small>W · optional</small></div><div class="pair"><label>Typical / average<input name="typical_power_w" type="number" step="any" min="0" inputmode="decimal" placeholder="Unknown"></label><label>Maximum<input name="max_power_w" type="number" step="any" min="0" inputmode="decimal" placeholder="Unknown"></label></div><p class="helper">Use ratings for the whole cabinet. Leave blank if unknown; 0 W is an explicit value. Maximum must be at least typical / average when both are supplied. Demo panels have no power ratings.</p>
         <label class="checkbox-label"><input name="rotatable" type="checkbox">Allow 90° rotation</label>
         <label>Notes <span class="optional">optional</span><textarea name="notes" rows="2" maxlength="2000"></textarea></label>
         <div id="panel-error" class="error-box" role="alert" hidden></div>

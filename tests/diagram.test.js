@@ -62,3 +62,59 @@ test('summary and report distinguish physical active extent from pixel aspect', 
   assert.match(svg, /LED active extent aspect 1.7895:1/);
   assert.match(svg, /LED pixel aspect 1.7778:1/);
 });
+
+test('diagram and summary preserve centered frame origins and all four edge gaps', () => {
+  const result = calculate(config({ wall: { width_mm: 2500, height_mm: 1450 }, zones: [{ panelId: id(9), alignment: 'center' }] }), [panel()]);
+  const svg = renderDiagram(result, { report: true, date });
+  assert.match(svg, /data-frame-x-mm="50" data-frame-y-mm="50"/);
+  assert.match(svg, /Alignment: Center/);
+  assert.match(svg, /Left: 50 mm gap · Right: 50 mm gap · Top: 50 mm gap · Bottom: 50 mm gap/);
+  const summary = summaryText(result, date);
+  assert.match(summary, /Alignment: Center; frame origin \(50, 50\) mm/);
+  assert.match(summary, /Frame edge gaps: Left: 50 mm gap · Right: 50 mm gap · Top: 50 mm gap · Bottom: 50 mm gap/);
+});
+
+test('all corner diagrams draw from the selected physical frame origin', () => {
+  const cases = { top_left: [0,100], top_right: [100,100], bottom_left: [0,0], bottom_right: [100,0] };
+  for (const [alignment, [x,y]] of Object.entries(cases)) {
+    const result = calculate(config({ wall: { width_mm: 2500, height_mm: 1450 }, zones: [{ panelId: id(9), alignment }] }), [panel()]);
+    const svg = renderDiagram(result, { date });
+    assert.ok(svg.includes(`data-frame-x-mm="${x}" data-frame-y-mm="${y}"`), alignment);
+    assert.ok(!svg.includes('undefined'), alignment);
+  }
+});
+
+test('center cover report labels overflow on each affected edge and keeps negative origins visible', () => {
+  const result = calculate(config({ wall: { width_mm: 2300, height_mm: 1300 }, strategy: 'cover_wall', zones: [{ panelId: id(9), alignment: 'center' }] }), [panel()]);
+  const svg = renderDiagram(result, { report: true, date });
+  assert.match(svg, /data-frame-x-mm="-50" data-frame-y-mm="-25"/);
+  assert.match(svg, /Left: 50 mm overflow · Right: 50 mm overflow · Top: 25 mm overflow · Bottom: 25 mm overflow/);
+  assert.match(svg, /stroke="#a62439" stroke-width="1.7" stroke-dasharray="6 3"/);
+  const summary = summaryText(result, date);
+  assert.match(summary, /frame origin \(-50, -25\) mm/);
+  assert.match(summary, /Left: 50 mm overflow/);
+  assert.ok(!summary.includes('Left: -50 mm gap'));
+});
+
+test('reports show supplied power by zone, SKU and wall with unknown or partial totals', () => {
+  const result = calculate(config({ wall: { width_mm: 2600, height_mm: 1450 }, mode: 'two_zones', split: { direction: 'vertical', offset_mm: 1300 }, zones: [{ panelId: id(9), alignment: 'top_right' }, { panelId: id(1), alignment: 'center' }] }), [panel({ typical_power_w: 100, max_power_w: 250 }), panel({ id: id(1), name: 'Unknown cabinet' })]);
+  const summary = summaryText(result, date);
+  assert.match(summary, /Zone power: Typical \/ average: 800 W \/ 0.8 kW · Maximum: 2,000 W \/ 2 kW/);
+  assert.match(summary, /Zone power: Typical \/ average: Unknown/);
+  assert.match(summary, /Whole wall power: Typical \/ average: Partial/);
+  assert.match(summary, /Counts by SKU:/);
+  assert.match(summary, /Example panel.*800 W \/ 0.8 kW/);
+  const svg = renderDiagram(result, { report: true, date });
+  for (const phrase of ['Whole wall power:', 'Partial', 'Unknown', 'SKU power', 'Top right', 'Center']) assert.ok(svg.includes(phrase), phrase);
+  assert.ok(!svg.includes('NaN'));
+});
+
+test('rotated frame with active insets retains alignment, gaps and wattage in exports', () => {
+  const result = calculate(config({ wall: { width_mm: 1500, height_mm: 1500 }, zones: [{ panelId: id(9), rotated: true, alignment: 'top_right' }] }), [panel({ active_width_mm: 580, active_height_mm: 317.5, frame_width_mm: 600, frame_height_mm: 337.5, typical_power_w: 100, max_power_w: 200 })]);
+  const svg = renderDiagram(result, { report: true, date });
+  assert.match(svg, /data-frame-x-mm="150" data-frame-y-mm="300"/);
+  assert.match(svg, /Frame 337.5 × 600 mm/);
+  assert.match(svg, /Active 317.5 × 580 mm/);
+  assert.match(svg, /Left: 150 mm gap · Right: 0 mm gap · Top: 0 mm gap · Bottom: 300 mm gap/);
+  assert.match(summaryText(result,date), /800 W \/ 0.8 kW/);
+});

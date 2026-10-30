@@ -1,5 +1,6 @@
 /** Pure geometry and validation; millimetres are physical, resolution is pixels. */
 export const EXACT_TOLERANCE_MM = 0.5;
+export const ALIGNMENTS = Object.freeze({ center: 'Center', top_left: 'Top left', top_right: 'Top right', bottom_left: 'Bottom left', bottom_right: 'Bottom right' });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const isEmpty = value => value === undefined || value === null || value === '';
 const MAX_NOISE_MM = 1e-9;
@@ -19,6 +20,14 @@ function positive(value, label, integer = false) {
     throw new Error(`${label} must be a positive ${integer ? 'safe integer' : 'finite number'}.`);
   }
   return number;
+}
+
+function optionalPower(value, label) {
+  if (isEmpty(value)) return null;
+  if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && !value.trim())) throw new Error(`${label} must be a nonnegative finite number or blank.`);
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw new Error(`${label} must be a nonnegative finite number or blank.`);
+  return finite(number, label);
 }
 
 function finite(value, label) {
@@ -70,6 +79,9 @@ export function normalizePanel(raw) {
   }
   if (raw.rotatable !== undefined && typeof raw.rotatable !== 'boolean') throw new Error('Rotatable must be true or false.');
   panel.rotatable = raw.rotatable ?? false;
+  panel.typical_power_w = optionalPower(raw.typical_power_w, 'Typical power');
+  panel.max_power_w = optionalPower(raw.max_power_w, 'Maximum power');
+  if (panel.typical_power_w !== null && panel.max_power_w !== null && panel.max_power_w < panel.typical_power_w) throw new Error('Maximum power must be at least typical power.');
   panel.pixel_pitch_mm = isEmpty(raw.pixel_pitch_mm) ? null : positive(raw.pixel_pitch_mm, 'Pixel pitch');
   panel.warnings = [];
   for (const [axis, dimension, title] of [['w', 'active_width_mm', 'width'], ['h', 'active_height_mm', 'height']]) {
@@ -167,8 +179,35 @@ function format(value) {
   return Number(value.toPrecision(10)).toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
+export function alignmentName(alignment) { return ALIGNMENTS[alignment] ?? ALIGNMENTS.bottom_left; }
+
+/** Signed gaps are clearances relative to the zone target; negative means overflow. */
+export function gapText(value) { return `${format(Math.abs(value))} mm ${value < 0 ? 'overflow' : 'gap'}`; }
+
+export function powerText(metric) {
+  if (metric.status === 'unknown') return 'Unknown';
+  const amount = `${format(metric.watts)} W / ${format(metric.watts / 1000)} kW`;
+  return metric.status === 'partial' ? `Partial: ${amount} known (${format(metric.knownCount)} of ${format(metric.totalCount)} cabinets)` : amount;
+}
+
+function aggregatePower(entries) {
+  const totalCount = finite(entries.reduce((sum, entry) => sum + entry.count, 0), 'Power cabinet count');
+  const metric = key => {
+    let watts = 0, knownCount = 0;
+    for (const { panel, count } of entries) {
+      if (panel[key] === null || !count) continue;
+      watts = finite(watts + finite(panel[key] * count, 'Calculated power'), 'Total power');
+      knownCount = finite(knownCount + count, 'Known power cabinet count');
+    }
+    return { watts, knownCount, totalCount, status: knownCount === totalCount ? 'complete' : knownCount ? 'partial' : 'unknown' };
+  };
+  return { typical: metric('typical_power_w'), maximum: metric('max_power_w') };
+}
+
 function makeZone(rectangle, choice, library, strategy) {
   object(choice, `${rectangle.label} selection`);
+  const alignment = choice.alignment ?? 'bottom_left';
+  if (!Object.hasOwn(ALIGNMENTS, alignment)) throw new Error(`Choose a valid alignment for ${rectangle.label}.`);
   const panelId = typeof choice.panelId === 'string' ? choice.panelId.toLowerCase() : choice.panelId;
   const raw = library.find(panel => panel.id === panelId);
   if (!raw) throw new Error(`Choose a library panel for ${rectangle.label}.`);
@@ -184,6 +223,11 @@ function makeZone(rectangle, choice, library, strategy) {
   const resolutionW = count ? finite(nx * panel.resolution_w, 'Pixel width') : 0;
   const resolutionH = count ? finite(ny * panel.resolution_h, 'Pixel height') : 0;
   const deltaW = rectangle.width - actualWidth, deltaH = rectangle.height - actualHeight;
+  const left = alignment === 'center' ? deltaW / 2 : alignment.endsWith('right') ? deltaW : 0;
+  const bottom = alignment === 'center' ? deltaH / 2 : alignment.startsWith('top') ? deltaH : 0;
+  const gaps = { left, right: deltaW - left, top: deltaH - bottom, bottom };
+  const actualX = finite(rectangle.x + left, 'Actual X position'), actualY = finite(rectangle.y + bottom, 'Actual Y position');
+  finite(actualX + actualWidth, 'Actual right extent'); finite(actualY + actualHeight, 'Actual top extent');
   const utilization = finite((actualWidth / rectangle.width) * (actualHeight / rectangle.height), 'Area utilization');
   const warnings = panel.warnings.map(item => ({ ...item }));
   if (!count) warnings.push(warn('amber', `${rectangle.label} is too small for a complete cabinet (${nx} × ${ny}); no active canvas.`));
@@ -193,7 +237,8 @@ function makeZone(rectangle, choice, library, strategy) {
   if (deltaW > precision(rectangle.width, actualWidth) || deltaH > precision(rectangle.height, actualHeight)) {
     warnings.push(warn('amber', `${rectangle.label} underfills its target: ${format(Math.max(0, deltaW))} mm horizontally, ${format(Math.max(0, deltaH))} mm vertically.`));
   }
-  return { ...rectangle, panel, rotated: panel.rotated, nx, ny, count, actualWidth, actualHeight, activeWidth, activeHeight, resolutionW, resolutionH, deltaW, deltaH, utilization, warnings };
+  const power = aggregatePower([{ panel, count }]);
+  return { ...rectangle, panel, alignment, actualX, actualY, gaps, power, rotated: panel.rotated, nx, ny, count, actualWidth, actualHeight, activeWidth, activeHeight, resolutionW, resolutionH, deltaW, deltaH, utilization, warnings };
 }
 
 function canvasFor(zones, mode, split) {
@@ -205,14 +250,14 @@ function canvasFor(zones, mode, split) {
   if (zones.some(zone => !same(zone.panel.active_width_mm, zone.panel.frame_width_mm) || !same(zone.panel.active_height_mm, zone.panel.frame_height_mm))) return no('frame insets create incompatible active-area gaps.');
   if (zones.some(zone => zone.deltaW < -precision(zone.width, zone.actualWidth) || zone.deltaH < -precision(zone.height, zone.actualHeight))) return no('a zone crosses its boundary; clean abutment is not buildable.');
   if (split.direction === 'vertical') {
-    if (!same(a.actualWidth, a.width) || !same(a.actualHeight, b.actualHeight) || a.resolutionH !== b.resolutionH) return no('left and right grids do not abut with matching aligned vertical pixel spans.');
+    if (!same(a.actualX + a.actualWidth, b.actualX) || !same(a.actualY, b.actualY) || !same(a.actualHeight, b.actualHeight) || a.resolutionH !== b.resolutionH) return no('left and right grids do not abut with matching aligned vertical pixel spans.');
     return { combined: true, width: finite(a.resolutionW + b.resolutionW, 'Combined pixel width'), height: a.resolutionH, reason: 'Clean vertical abutment; equal actual X/Y pitches and aligned pixel rows.' };
   }
-  if (!same(a.actualHeight, a.height) || !same(a.actualWidth, b.actualWidth) || a.resolutionW !== b.resolutionW) return no('bottom and top grids do not abut with matching aligned horizontal pixel spans.');
+  if (!same(a.actualY + a.actualHeight, b.actualY) || !same(a.actualX, b.actualX) || !same(a.actualWidth, b.actualWidth) || a.resolutionW !== b.resolutionW) return no('bottom and top grids do not abut with matching aligned horizontal pixel spans.');
   return { combined: true, width: a.resolutionW, height: finite(a.resolutionH + b.resolutionH, 'Combined pixel height'), reason: 'Clean horizontal abutment; equal actual X/Y pitches and aligned pixel columns.' };
 }
 
-/** Every zone anchors at its bottom-left. Horizontal offsets measure from bottom. */
+/** Alignment is independent within each zone. Horizontal cuts measure from bottom. */
 export function calculate(config, panels) {
   object(config, 'Layout');
   object(config.wall, 'Wall');
@@ -250,8 +295,15 @@ export function calculate(config, panels) {
     if (!same(a.panel.actual_pitch_x_mm, b.panel.actual_pitch_x_mm) || !same(a.panel.actual_pitch_y_mm, b.panel.actual_pitch_y_mm)) {
       warnings.push(warn('amber', 'Mixed actual pixel pitches: per-zone resolutions require processor mapping.'));
     }
-    const crossesCut = split.direction === 'vertical' ? a.actualWidth > a.width + precision(a.actualWidth, a.width) : a.actualHeight > a.height + precision(a.actualHeight, a.height);
-    if (crossesCut && a.count) warnings.push(warn('red', `${a.label} crosses the split${b.count ? ' and overlaps the other zone' : ''}. This is not a clean buildable combined canvas.`));
+    const vertical = split.direction === 'vertical';
+    const cut = split.offset_mm;
+    const crosses = vertical
+      ? [a.actualX + a.actualWidth > cut + precision(cut, a.actualX + a.actualWidth), b.actualX < cut - precision(cut, b.actualX)]
+      : [a.actualY + a.actualHeight > cut + precision(cut, a.actualY + a.actualHeight), b.actualY < cut - precision(cut, b.actualY)];
+    const overlapWidth = Math.min(a.actualX + a.actualWidth, b.actualX + b.actualWidth) - Math.max(a.actualX, b.actualX);
+    const overlapHeight = Math.min(a.actualY + a.actualHeight, b.actualY + b.actualHeight) - Math.max(a.actualY, b.actualY);
+    const overlaps = a.count && b.count && overlapWidth > precision(a.actualWidth, b.actualWidth) && overlapHeight > precision(a.actualHeight, b.actualHeight);
+    for (const [index, zone] of zones.entries()) if (zone.count && crosses[index]) warnings.push(warn('red', `${zone.label} crosses the split${overlaps ? ' and overlaps the other zone' : ''}. This is not a clean buildable combined canvas.`));
   }
   const countMap = new Map();
   for (const zone of zones) {
@@ -261,5 +313,6 @@ export function calculate(config, panels) {
   }
   const totalCount = finite(zones.reduce((sum, zone) => sum + zone.count, 0), 'Total cabinet count');
   const utilization = finite(zones.reduce((sum, zone) => sum + zone.utilization * (zone.width / wall.width_mm) * (zone.height / wall.height_mm), 0), 'Total area utilization');
-  return { wall, mode, strategy, split, zones, totalCount, counts: [...countMap.values()], warnings, canvas: canvasFor(zones, mode, split), utilization };
+  const counts = [...countMap.values()].map(entry => ({ ...entry, power: aggregatePower(zones.filter(zone => zone.panel.id === entry.panelId)) }));
+  return { wall, mode, strategy, split, zones, totalCount, counts, power: aggregatePower(zones), warnings, canvas: canvasFor(zones, mode, split), utilization };
 }

@@ -1,4 +1,4 @@
-import { normalizePanel, parseLibrary, calculate } from './core.js';
+import { normalizePanel, parseLibrary, calculate, ALIGNMENTS, alignmentName, gapText, powerText } from './core.js';
 import { renderDiagram, summaryText, downloadPNG } from './diagram.js';
 
 const $ = id => document.getElementById(id);
@@ -11,7 +11,7 @@ const seeds = [
   {id:'10000000-0000-4000-8000-000000000002',name:'Demo Square 300',vendor:'Fictional example',active_width_mm:300,active_height_mm:300,resolution_w:192,resolution_h:192,pixel_pitch_mm:1.5625,rotatable:true,notes:'Example only. Not a real product.'},
   {id:'10000000-0000-4000-8000-000000000003',name:'Demo Inset 500',vendor:'Fictional example',active_width_mm:480,active_height_mm:480,frame_width_mm:500,frame_height_mm:500,resolution_w:240,resolution_h:240,pixel_pitch_mm:2,rotatable:false,notes:'Fictional 10 mm centered inset on all sides.'}
 ].map(normalizePanel);
-const defaults = {wall:{name:'Main stage',width_mm:4800,height_mm:2700},mode:'single',strategy:'fit_inside',split:{direction:'vertical',offset_mm:2400},zones:[{panelId:seeds[0].id,rotated:false},{panelId:seeds[1].id,rotated:false}]};
+const defaults = {wall:{name:'Main stage',width_mm:4800,height_mm:2700},mode:'single',strategy:'fit_inside',split:{direction:'vertical',offset_mm:2400},zones:[{panelId:seeds[0].id,rotated:false,alignment:'center'},{panelId:seeds[1].id,rotated:false,alignment:'center'}]};
 let panels = structuredClone(seeds), config = structuredClone(defaults), result = null, editingId = null;
 let storageAvailable = true;
 try {
@@ -21,7 +21,7 @@ try {
     panels = parseLibrary({version:1,panels:data.panels});
     if (data.config && typeof data.config === 'object') {
       config = {...defaults,...data.config,wall:{...defaults.wall,...data.config.wall},split:{...defaults.split,...data.config.split}};
-      config.zones = [0,1].map(i => ({...defaults.zones[i],...data.config.zones?.[i]}));
+      config.zones = [0,1].map(i => ({...defaults.zones[i],...data.config.zones?.[i],alignment:data.config.zones?.[i]?.alignment ?? 'bottom_left'}));
     }
   }
 } catch (error) {
@@ -58,25 +58,24 @@ function renderSelectors() {
     const zone = config.zones[i];
     const panel = panels.find(p=>p.id===zone.panelId);
     const colorIndex = config.zones.slice(0,i).some(z=>z.panelId===zone.panelId) ? 0 : i;
-    return `<div class="zone-picker"><div class="zone-heading"><i class="swatch ${colorIndex ? 'swatch-b' : ''}"></i>${label}</div><div class="zone-fields"><label>Panel model<select data-zone="${i}" data-field="panelId" aria-label="${label} panel"><option value="" ${!panel ? 'selected' : ''} disabled>Select a panel</option>${panels.map(p=>`<option value="${esc(p.id)}" ${p.id===zone.panelId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>Orientation<select data-zone="${i}" data-field="rotated" aria-label="${label} orientation"><option value="false" ${!zone.rotated?'selected':''}>0° · Native</option><option value="true" ${zone.rotated?'selected':''} ${panel?.rotatable?'':'disabled'}>90° · Rotate</option></select></label></div>${panel ? `<p class="panel-facts">Frame ${num(panel.frame_width_mm)} × ${num(panel.frame_height_mm)} mm · ${num(panel.resolution_w)} × ${num(panel.resolution_h)} px${panel.rotatable?'':' · fixed orientation'}</p>` : '<p class="panel-facts">Add or choose a valid panel from your library.</p>'}</div>`;
+    return `<div class="zone-picker"><div class="zone-heading"><i class="swatch ${colorIndex ? 'swatch-b' : ''}"></i>${label}</div><div class="zone-fields"><label>Panel model<select data-zone="${i}" data-field="panelId" aria-label="${label} panel"><option value="" ${!panel ? 'selected' : ''} disabled>Select a panel</option>${panels.map(p=>`<option value="${esc(p.id)}" ${p.id===zone.panelId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>Orientation<select data-zone="${i}" data-field="rotated" aria-label="${label} orientation"><option value="false" ${!zone.rotated?'selected':''}>0° · Native</option><option value="true" ${zone.rotated?'selected':''} ${panel?.rotatable?'':'disabled'}>90° · Rotate</option></select></label></div><label>Position in ${split ? 'zone' : 'wall'}<select data-zone="${i}" data-field="alignment" aria-label="${label} alignment">${Object.entries(ALIGNMENTS).map(([value,name])=>`<option value="${value}" ${value===zone.alignment?'selected':''}>${name}</option>`).join('')}</select></label>${panel ? `<p class="panel-facts">Frame ${num(panel.frame_width_mm)} × ${num(panel.frame_height_mm)} mm · ${num(panel.resolution_w)} × ${num(panel.resolution_h)} px${panel.rotatable?'':' · fixed orientation'}<br>Power per cabinet: typical ${panel.typical_power_w === null ? 'unknown' : num(panel.typical_power_w)+' W'} · max ${panel.max_power_w === null ? 'unknown' : num(panel.max_power_w)+' W'}</p>` : '<p class="panel-facts">Add or choose a valid panel from your library.</p>'}</div>`;
   }).join('');
 }
 
 function row(label,value) {return `<div class="result-row"><span>${label}</span><strong>${value}</strong></div>`;}
-function delta(value) {return `${num(Math.abs(value))} mm ${value < 0 ? 'overflow' : 'leftover'}`;}
 function renderResults(r) {
   const canvas = r.canvas.combined && r.canvas.width > 0 && r.canvas.height > 0 ? `${num(r.canvas.width)} × ${num(r.canvas.height)}` : (r.totalCount ? 'Per zone' : 'No pixels');
   $('results').innerHTML = `<div class="metric-grid"><div class="metric"><div class="label">Total cabinets</div><div class="value">${num(r.totalCount)}</div><div class="hint">${r.counts.map(p=>`${num(p.count)} ${esc(p.name)}`).join(' + ') || 'No cabinets fit'}</div></div><div class="metric"><div class="label">${r.mode==='single'?'LED resolution':'Pixel canvas'}</div><div class="value" style="font-size:${canvas.length > 15?'18':'22'}px">${canvas}</div><div class="hint">${r.canvas.combined?'pixels · aligned canvas':'See zone resolutions below'}</div></div><div class="metric"><div class="label">Utilization</div><div class="value">${num(r.utilization*100)}<small>%</small></div><div class="hint">Cabinet footprint / target area</div></div></div>
-  <div class="card result-card">${r.zones.map((z,i)=>`<div class="zone-result"><h3><i class="swatch ${i && z.panel.id!==r.zones[0].panel.id?'swatch-b':''}"></i>${esc(z.label)} <span class="optional">${esc(z.panel.name)} · ${z.rotated?'90° rotated':'0° native'}</span></h3><div class="result-table">${row('Cabinet grid',`${num(z.nx)} × ${num(z.ny)} · ${num(z.count)} cabinets`)}${row('Zone target',`${num(z.width)} × ${num(z.height)} mm`)}${row('Actual footprint',`${num(z.actualWidth)} × ${num(z.actualHeight)} mm`)}${row('Resolution',`${num(z.resolutionW)} × ${num(z.resolutionH)} px`)}${row('Width difference',delta(z.deltaW))}${row('Height difference',delta(z.deltaH))}${row('Active aggregate',`${num(z.activeWidth)} × ${num(z.activeHeight)} mm`)}${row('LED aspect ratio',ratio(z.activeWidth,z.activeHeight))}${row('Zone utilization',`${num(z.utilization*100)}%`)}${row('Derived pitch X / Y',`${num(z.panel.active_width_mm/z.panel.resolution_w)} / ${num(z.panel.active_height_mm/z.panel.resolution_h)} mm`)}</div></div>`).join('')}
+  <div class="card result-card">${r.zones.map((z,i)=>`<div class="zone-result"><h3><i class="swatch ${i && z.panel.id!==r.zones[0].panel.id?'swatch-b':''}"></i>${esc(z.label)} <span class="optional">${esc(z.panel.name)} · ${z.rotated?'90° rotated':'0° native'}</span></h3><div class="result-table">${row('Cabinet grid',`${num(z.nx)} × ${num(z.ny)} · ${num(z.count)} cabinets`)}${row('Zone target',`${num(z.width)} × ${num(z.height)} mm`)}${row('Actual footprint',`${num(z.actualWidth)} × ${num(z.actualHeight)} mm`)}${row('Resolution',`${num(z.resolutionW)} × ${num(z.resolutionH)} px`)}${row('Position',alignmentName(z.alignment))}${row('Left gap',gapText(z.gaps.left))}${row('Right gap',gapText(z.gaps.right))}${row('Top gap',gapText(z.gaps.top))}${row('Bottom gap',gapText(z.gaps.bottom))}${row('Typical / average power',powerText(z.power.typical))}${row('Maximum power',powerText(z.power.maximum))}${row('Active aggregate',`${num(z.activeWidth)} × ${num(z.activeHeight)} mm`)}${row('LED aspect ratio',ratio(z.activeWidth,z.activeHeight))}${row('Zone utilization',`${num(z.utilization*100)}%`)}${row('Derived pitch X / Y',`${num(z.panel.active_width_mm/z.panel.resolution_w)} / ${num(z.panel.active_height_mm/z.panel.resolution_h)} mm`)}</div></div>`).join('')}
   <div class="result-table" style="margin-top:16px">${row('Target wall ratio',ratio(r.wall.width_mm,r.wall.height_mm))}</div>
   <div class="mapping ${r.canvas.combined?'':'separate'}"><strong>${r.canvas.combined?'Aligned pixel canvas':'Processor mapping / two canvases'}</strong>${esc(r.canvas.reason)}</div>
-  </div>${r.warnings.length?`<div class="warnings">${r.warnings.map(w=>`<div class="warning ${w.level==='red'?'red':''}"><strong aria-hidden="true">${w.level==='red'?'!':'△'}</strong><span>${esc(w.message)}</span></div>`).join('')}</div>`:''}`;
+  </div><div class="card result-card power-card"><h3>Whole-wall power</h3><div class="result-table">${row('Typical / average',powerText(r.power.typical))}${row('Maximum',powerText(r.power.maximum))}</div><p class="helper">Installed cabinet count × your per-cabinet ratings. Unknown ratings are excluded from partial totals.</p><details class="sku-power"><summary>Power by panel model (SKU)</summary>${r.counts.map(c=>`<div class="sku-power-item"><h4>${esc(c.name)} <span class="optional">${num(c.count)} cabinets</span></h4><div class="result-table">${row('Typical / average',powerText(c.power.typical))}${row('Maximum',powerText(c.power.maximum))}</div></div>`).join('')}</details></div>${r.warnings.length?`<div class="warnings">${r.warnings.map(w=>`<div class="warning ${w.level==='red'?'red':''}"><strong aria-hidden="true">${w.level==='red'?'!':'△'}</strong><span>${esc(w.message)}</span></div>`).join('')}</div>`:''}`;
 }
 
 function update() {
   $('strategy-help').textContent = {
-    fit_inside:'Fit inside uses whole cabinets within each zone. Every grid starts at its zone’s bottom-left corner.',
-    cover_wall:'Cover wall rounds both axes up. Overflow extends right and upward; zones may cross the cut and overlap.',
+    fit_inside:'Fit inside uses whole cabinets within each zone. Position aligns the cabinet frames to the center or selected corner of that zone.',
+    cover_wall:'Cover wall rounds both axes up. Position sets which edges overflow; centered grids share overflow on both sides. Zones may cross the cut and overlap.',
     exact_only:'Exact accepts the nearest positive integer footprint within 0.5 mm on each axis. A tiny accepted difference may remain.'
   }[config.strategy] || '';
   try {
@@ -114,7 +113,7 @@ $('zone-selectors').addEventListener('change',e=>{
 });
 
 const panelForm = $('panel-form');
-const numericFields = ['active_width_mm','active_height_mm','frame_width_mm','frame_height_mm','resolution_w','resolution_h','pixel_pitch_mm'];
+const numericFields = ['active_width_mm','active_height_mm','frame_width_mm','frame_height_mm','resolution_w','resolution_h','pixel_pitch_mm','typical_power_w','max_power_w'];
 function editPanel(id) {
   editingId=id;
   const panel = panels.find(p=>p.id===id);
@@ -127,7 +126,7 @@ function editPanel(id) {
   renderLibrary();
 }
 function renderLibrary() {
-  $('library-list').innerHTML = panels.length ? panels.map(p=>`<article class="library-item ${editingId===p.id?'selected':''}"><h3>${esc(p.name)}</h3><p>${esc(p.vendor||'No vendor')} · ${num(p.frame_width_mm)} × ${num(p.frame_height_mm)} mm</p><p>${num(p.resolution_w)} × ${num(p.resolution_h)} px · ${p.rotatable?'rotatable':'fixed'}</p><div class="actions"><button type="button" data-action="edit" data-id="${p.id}" aria-label="Edit ${esc(p.name)}">Edit</button><button type="button" data-action="duplicate" data-id="${p.id}" aria-label="Duplicate ${esc(p.name)}">Duplicate</button><button type="button" class="delete" data-action="delete" data-id="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button></div></article>`).join('') : '<p class="helper">Your library is empty. Add a panel to begin.</p>';
+  $('library-list').innerHTML = panels.length ? panels.map(p=>`<article class="library-item ${editingId===p.id?'selected':''}"><h3>${esc(p.name)}</h3><p>${esc(p.vendor||'No vendor')} · ${num(p.frame_width_mm)} × ${num(p.frame_height_mm)} mm</p><p>${num(p.resolution_w)} × ${num(p.resolution_h)} px · ${p.rotatable?'rotatable':'fixed'}</p><p>Typical ${p.typical_power_w === null ? 'unknown' : num(p.typical_power_w)+' W'} · Max ${p.max_power_w === null ? 'unknown' : num(p.max_power_w)+' W'}</p><div class="actions"><button type="button" data-action="edit" data-id="${p.id}" aria-label="Edit ${esc(p.name)}">Edit</button><button type="button" data-action="duplicate" data-id="${p.id}" aria-label="Duplicate ${esc(p.name)}">Duplicate</button><button type="button" class="delete" data-action="delete" data-id="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button></div></article>`).join('') : '<p class="helper">Your library is empty. Add a panel to begin.</p>';
 }
 $('manage-library').addEventListener('click',()=>{editPanel(panels[0]?.id||null);$('library-dialog').showModal();});
 $('close-library').addEventListener('click',()=>$('library-dialog').close());
